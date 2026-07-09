@@ -140,11 +140,40 @@ async function executarJob(job, supabase) {
   }
 
   // Buscar flow
-  const { data: flows } = await supabase
+  // Tentar buscar pelo base44_id direto
+let { data: flows } = await supabase
+  .from('flows')
+  .select('*')
+  .eq('base44_id', job.flow_base44_id)
+  .limit(1);
+
+// Se não achou, tentar converter UUID de volta para base44_id
+if (!flows || flows.length === 0) {
+  // Remover zeros do padding e hífens para obter o hex original
+  const hexId = job.flow_base44_id.replace(/-/g, '').replace(/^0+/, '');
+  console.log(`[EXEC] Tentando base44_id convertido: ${hexId}`);
+  
+  const result = await supabase
     .from('flows')
     .select('*')
-    .eq('base44_id', job.flow_base44_id)
+    .eq('base44_id', hexId)
     .limit(1);
+  
+  flows = result.data;
+}
+
+// Se ainda não achou, buscar pelo UUID direto
+if (!flows || flows.length === 0) {
+  const result = await supabase
+    .from('flows')
+    .select('*')
+    .eq('id', job.flow_base44_id)
+    .limit(1);
+  
+  flows = result.data;
+}
+
+console.log(`[EXEC] Flow encontrado: ${flows?.length > 0 ? flows[0].name : 'NÃO'}`);
 
   const flow = flows?.[0];
   if (!flow) {
