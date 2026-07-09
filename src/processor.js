@@ -218,10 +218,45 @@ async function enviarViaWhatsApp(node, to, phoneNumberId, token, context) {
       text: { body: msg }
     };
 
-  } else {
-    console.log(`[EXEC] Tipo não suportado ainda: ${node.type}`);
+  } else if (node.type === 'message') {
+  // Alias para send_message
+  let msg = node.config?.message || node.config?.text || '';
+  Object.entries(context).forEach(([k, v]) => {
+    msg = msg.replace(new RegExp(`{{${k}}}`, 'g'), String(v || ''));
+  });
+
+  if (!msg) {
+    console.log(`[EXEC] Mensagem vazia no nó tipo message`);
     return true;
   }
+
+  console.log(`[EXEC] Enviando mensagem (type=message): "${msg}"`);
+
+  const res = await axios.post(
+    `https://graph.facebook.com/v20.0/${phoneNumberId}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body: msg }
+    },
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    }
+  );
+
+  const msgId = res.data?.messages?.[0]?.id;
+  console.log(`[EXEC] ✅ Meta OK: ${res.status} | id: ${msgId}`);
+  return res.status >= 200 && res.status < 300;
+
+} else {
+  console.log(`[EXEC] Tipo não suportado: ${node.type} — marcando como sucesso`);
+  return true;
+}
 
   try {
     const res = await axios.post(
