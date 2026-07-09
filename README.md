@@ -1,0 +1,1 @@
+# go-solucoes-worker
