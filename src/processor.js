@@ -119,3 +119,49 @@ async function dispararFluxoNoBase44(job) {
   const workerSecret = process.env.WORKER_SECRET;
 
   if (!base44Url) {
+    console.error('[TRIGGER] BASE44_WORKER_ENDPOINT não configurado');
+    return false;
+  }
+
+  try {
+    console.log(`[TRIGGER] Disparando fluxo: ${job.flow_base44_id} → ${job.contact_phone}`);
+
+    const res = await axios.post(
+      base44Url,
+      {
+        action: 'startFlow',
+        flow_id: job.flow_base44_id,
+        contact_phone: job.contact_phone,
+        company_id: job.company_id,
+        context: job.context || {},
+        reference_id: job.reference_id,
+        reference_type: job.reference_type
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${workerSecret}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 25000
+      }
+    );
+
+    console.log(`[TRIGGER] Base44 respondeu: ${res.status} | ${JSON.stringify(res.data)}`);
+    return res.status >= 200 && res.status < 300 && res.data?.ok !== false;
+
+  } catch(e) {
+    const err = e.response?.data;
+    console.error(`[TRIGGER] Erro ao chamar Base44: ${JSON.stringify(err || e.message)}`);
+    return false;
+  }
+}
+
+function chunkArray(arr, size) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+module.exports = { processJobs };
