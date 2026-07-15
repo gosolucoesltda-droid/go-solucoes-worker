@@ -13,8 +13,6 @@ async function scheduleRecurring() {
   console.log('[SCHEDULER] Verificando gatilhos diários...');
 
   await Promise.allSettled([
-    processTaskOverdue(supabase, now),
-    processDealStalled(supabase, now),
     processContactInactive(supabase, now),
     processBalanceLow(supabase, now),
     processRecurringFlows(supabase, now)
@@ -22,7 +20,6 @@ async function scheduleRecurring() {
 
   console.log('[SCHEDULER] Concluído');
 }
-
 // ── Cria job imediato (dispara no próximo ciclo de 1min) ──
 async function createJobIfNotExists(supabase, jobData) {
   const { data: existing } = await supabase
