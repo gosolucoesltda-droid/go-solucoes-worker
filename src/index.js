@@ -80,3 +80,17 @@ app.listen(PORT, () => {
   console.log(`[WORKER] Rodando na porta ${PORT}`);
   console.log('[WORKER] Crons ativos: 1min, daily 11h UTC, health 5min');
 });
+
+app.post('/run-scheduler', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader !== `Bearer ${process.env.WORKER_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    console.log('[MANUAL] Rodando scheduler sob demanda...');
+    await scheduleRecurring();
+    res.json({ ok: true, message: 'Scheduler executado' });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
