@@ -70,8 +70,8 @@ app.post('/run-poller', async (req, res) => {
 // POLLER — busca jobs vencidos e enfileira (1 réplica só!)
 // ══════════════════════════════════════════════════════════
 if (ROLE === 'poller' || ROLE === 'all') {
-  // A cada minuto: buscar jobs vencidos → fila
-  cron.schedule('* * * * *', async () => {
+  // A cada 30 segundos: buscar jobs vencidos → fila
+  cron.schedule('*/30 * * * * *', async () => {
     try {
       await pollAndEnqueue();
     } catch (e) {
