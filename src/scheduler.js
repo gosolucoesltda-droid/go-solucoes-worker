@@ -144,7 +144,7 @@ async function processContactInactive(supabase, now) {
         flow_base44_id: flow.base44_id || flow.id,
         contact_phone: contact.telefone,
         scheduled_for: now.toISOString(),
-        reference_id: `${contact.id}_inactive_${now.toISOString().slice(0,10)}`,
+        reference_id: `${contact.id}_inactive`,
         reference_type: 'contact',
         context: {
           contact_phone: contact.telefone,
