@@ -89,7 +89,7 @@ if (ROLE === 'poller' || ROLE === 'all') {
     try { await scheduleRecurring(); } catch (e) { console.error('[DAILY-08h]', e.message); }
   });
 
-  console.log('[WORKER] Poller ativo (1min) + scheduler diário (00h/08h)');
+  console.log('[WORKER] Poller ativo (30s) + scheduler diário (00h/08h)');
 }
 
 // ══════════════════════════════════════════════════════════
