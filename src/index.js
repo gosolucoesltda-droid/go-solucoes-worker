@@ -9,6 +9,7 @@
 //   3+ réplicas ROLE=worker
 // ══════════════════════════════════════════════════════════
 const express = require('express');
+const axios = require('axios');
 const cron = require('node-cron');
 const config = require('./config');
 const { pollAndEnqueue } = require('./poller');
