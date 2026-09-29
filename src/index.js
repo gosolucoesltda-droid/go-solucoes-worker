@@ -66,6 +66,49 @@ app.post('/run-poller', async (req, res) => {
   }
 });
 
+// ── Proxy IPv4: GOcrm → APIs que rejeitam IPv6 (ex: pdcapi.io) ──
+app.post('/proxy-fetch', async (req, res) => {
+  if (req.headers.authorization !== `Bearer ${config.WORKER_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { method = 'GET', url, headers = {}, body = null } = req.body || {};
+  if (!url) return res.status(400).json({ ok: false, error: 'url obrigatória' });
+
+  try {
+    const cleanHeaders = { ...headers };
+    delete cleanHeaders.host;
+    delete cleanHeaders['content-length'];
+
+    const upstream = await axios({
+      method,
+      url,
+      headers: cleanHeaders,
+      data: body ?? undefined,
+      family: 4,                    // força IPv4
+      timeout: 30000,
+      responseType: 'text',
+      transformResponse: [(d) => d], // não converter o JSON
+      validateStatus: () => true,    // repassa qualquer status
+    });
+
+    const respHeaders = { ...upstream.headers };
+    delete respHeaders['content-length'];
+    delete respHeaders['content-encoding'];
+    delete respHeaders['transfer-encoding'];
+
+    console.log(`[PROXY] ${method} ${url} → ${upstream.status}`);
+    res.json({
+      status: upstream.status,
+      ok: upstream.status >= 200 && upstream.status < 300,
+      headers: respHeaders,
+      body: typeof upstream.data === 'string' ? upstream.data : JSON.stringify(upstream.data),
+    });
+  } catch (e) {
+    console.error('[PROXY] Erro:', e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 // ══════════════════════════════════════════════════════════
 // POLLER — busca jobs vencidos e enfileira (1 réplica só!)
 // ══════════════════════════════════════════════════════════
