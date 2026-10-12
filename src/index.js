@@ -259,6 +259,10 @@ async function processJob(job) {
       success = result.ok;
       errorMsg = result.error || null;
       retry = result.retry !== false;
+      } else if (job.job_type === 'flow_timeout') {
+      // Timeout de IA / menu: o checkFlowTimeouts resolve todas as expirações vencidas
+      const result = await callBase44Function('checkFlowTimeouts', {});
+      success = result?.ok !== false;
     } else if (job.job_type === 'appointment_reminder') {
       success = await processAppointmentJob(job);
     } else {
