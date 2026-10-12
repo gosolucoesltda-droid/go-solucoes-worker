@@ -190,7 +190,7 @@ async function processDueJobs() {
     while (true) {
       const jobs = await claimDueJobs(BATCH_SIZE);
       if (jobs.length === 0) break;
-      console.log(`[PROCESS] lote: ${jobs.length} job(s)`);
+      console.log(`[PROCESS] processando lote de ${jobs.length} job(s)`);
       await processBatch(jobs);
       await new Promise(r => setTimeout(r, INTER_BATCH_DELAY_MS));
     }
@@ -252,7 +252,7 @@ async function processBatch(jobs) {
 
 async function processJob(job) {
   stats.processed++;
-  let success = false, errorMsg = null, retry = true;
+  console.log(`[JOB] id=${job.id} tipo=${job.job_type} phone=${job.contact_phone || '-'}`);
   try {
     if (job.job_type === 'flow_trigger') {
       const result = await processFlowTriggerJob(job);
