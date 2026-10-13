@@ -454,12 +454,18 @@ function startReconciliation() {
 
 function startTimeoutChecks() {
   setInterval(async () => {
-    try { await callBase44Function('checkContactFieldDates', {}); }
-    catch (e) { console.warn('[TIMEOUT_CHECK] checkContactFieldDates erro:', e.message); }
-    try { await callBase44Function('checkFlowTimeouts', {}); }
-    catch (e) { console.warn('[TIMEOUT_CHECK] checkFlowTimeouts erro:', e.message); }
+    // contact_field_date: NÃO é mais verificado aqui. Os jobs são criados no Supabase
+    // quando o campo muda (contactFieldUpdater) e disparados via NOTIFY. A varredura
+    // de segurança (repetir todo ano) roda 1x/dia no Base44.
+
+    // checkFlowTimeouts — stuck cleanup + flowEngine checkTimeouts
+    try {
+      await callBase44Function('checkFlowTimeouts', {});
+    } catch (e) {
+      console.warn('[TIMEOUT_CHECK] checkFlowTimeouts erro:', e.message);
+    }
   }, TIMEOUT_CHECK_INTERVAL_MS);
-  console.log(`[TIMEOUT_CHECK] a cada ${TIMEOUT_CHECK_INTERVAL_MS / 1000}s`);
+  console.log(`[TIMEOUT_CHECK] verificações a cada ${TIMEOUT_CHECK_INTERVAL_MS / 1000}s`);
 }
 
 function startHeartbeat() {
