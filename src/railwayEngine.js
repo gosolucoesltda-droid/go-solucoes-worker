@@ -158,7 +158,19 @@ async function processEvent(ev, pool) {
       const clickId = msg.raw.interactive?.button_reply?.id || msg.raw.interactive?.list_reply?.id || msg.raw.button?.payload || '';
       const json = node ? JSON.stringify(node) : '';
       if (!node || (clickId && json.includes(clickId)) || (msg.text && json.includes(JSON.stringify(msg.text.trim())))) {
-        console.log(`[ENGINE] id=${ev.id} clique do fluxo aguardando — fica com o Base44`); return false;
+        // Railway retoma o fluxo; a trava impede o Base44 de retomar de novo
+        if (!(await claim(pool, { base44_id: `resume:${msg.raw.id}` }, msg.from, 86400))) {
+          console.log(`[ENGINE] id=${ev.id} retomada já feita — ignorado`); return false;
+        }
+        const t1 = Date.now();
+        fetch(`${APP_URL}/functions/workerTrigger`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'resumeFlow', contact_phone: msg.from, company_id: contact.company_id, context: { connection_id: contact.connection_id, reply_text: msg.text, message_type: msg.type, selected_item_id: clickId } }),
+        })
+          .then((res) => console.log(`[ENGINE] id=${ev.id} RETOMOU fluxo aguardando "${msg.text}" status=${res.status} em ${Date.now() - t1}ms`))
+          .catch((e) => console.error(`[ENGINE] id=${ev.id} falha ao retomar:`, e.message));
+        return false;
       }
       ignoreWaiting = true; // botão de um menu antigo → clique novo
     }
