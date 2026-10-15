@@ -4,6 +4,7 @@
 
 const http = require('http');
 const { Client, Pool } = require('pg');
+const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
