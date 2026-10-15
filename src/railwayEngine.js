@@ -100,14 +100,16 @@ async function startInboundAny(ev, pool, flow, contact, msg) {
   const secs = cooldownSeconds(flow.trigger_config);
   if (!secs) return console.log(`[ENGINE] id=${ev.id} "${flow.name}" sem cooldown — fica com o Base44`);
 
+  // Contato recriado (excluído e voltou): ignora o histórico anterior à criação
+  const createdAt = contact.created_at ? new Date(contact.created_at) : new Date(0);
   const { rows: last } = await pool.query(
-    `select created_at from crm_flow_executions where flow_id = $1 and contact_phone = $2 order by created_at desc limit 1`,
-    [flow.base44_id, msg.from]
+    `select created_at from crm_flow_executions where flow_id = $1 and contact_phone = $2 and created_at >= $3 order by created_at desc limit 1`,
+    [flow.base44_id, msg.from, createdAt]
   );
   if (last[0] && Date.now() - new Date(last[0].created_at).getTime() < secs * 1000) {
     return console.log(`[ENGINE] id=${ev.id} "${flow.name}" em cooldown — não dispara`);
   }
-  if (!(await claim(pool, flow, msg.from, secs))) return console.log(`[ENGINE] id=${ev.id} "${flow.name}" já disparado — ignorado`);
+  if (!(await claim(pool, flow, msg.from, Math.min(secs, Math.max(10, (Date.now() - createdAt.getTime()) / 1000))))) return console.log(`[ENGINE] id=${ev.id} "${flow.name}" já disparado — ignorado`);
   await startFlow(ev, flow, contact, msg);
 }
 
@@ -130,7 +132,7 @@ async function processEvent(ev, pool) {
   }
 
   const { rows: contacts } = await pool.query(
-    `select id, company_id, connection_id, subscriber_active, automation_paused_until, tags, custom_fields from crm_contacts
+    `select id, company_id, connection_id, subscriber_active, automation_paused_until, tags, custom_fields, created_at from crm_contacts
      where telefone = $1 and connection_id = (select connection_id from flows where phone_number_id = $2 limit 1) limit 1`,
     [msg.from, ev.phone_number_id]
   );
