@@ -16,7 +16,7 @@ const UNIT_SECONDS = { minutes: 60, hours: 3600, days: 86400 };
 const KEYWORD_CLAIM_SECONDS = 30; // mesma janela usada pelo Base44
 
 function isPilot(phoneNumberId) {
-  return !!phoneNumberId && PILOT_IDS.includes(phoneNumberId);
+  return !!phoneNumberId && (PILOT_IDS.includes('*') || PILOT_IDS.includes(phoneNumberId));
 }
 
 function parseMessage(body) {
