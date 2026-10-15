@@ -143,15 +143,26 @@ async function processEvent(ev, pool) {
   if (msg.type === 'button' || msg.type === 'interactive') {
     // Fluxo aguardando o clique → o Base44 retoma (resumeFlow)
     const { rows: waiting } = await pool.query(
-      `select 1 from crm_flow_executions where contact_phone = $1 and company_id = $2 and status = 'waiting' limit 1`,
-      [msg.from, contact.company_id]
+      `select e.current_node_id, f.nodes from crm_flow_executions e left join flows f on f.base44_id = e.flow_id
+       where e.contact_phone = $1 and e.company_id = $2 and e.connection_id = $3 and e.status = 'waiting' order by e.created_at desc limit 1`,
+      [msg.from, contact.company_id, contact.connection_id]
     );
-    if (waiting.length) { console.log(`[ENGINE] id=${ev.id} clique com fluxo aguardando — fica com o Base44`); return false; }
+    let ignoreWaiting = false;
+    if (waiting.length) {
+      // Botão pertence ao nó que está aguardando → o Base44 retoma o fluxo
+      const node = (waiting[0].nodes || []).find((n) => n.id === waiting[0].current_node_id);
+      const clickId = msg.raw.interactive?.button_reply?.id || msg.raw.interactive?.list_reply?.id || msg.raw.button?.payload || '';
+      const json = node ? JSON.stringify(node) : '';
+      if (!node || (clickId && json.includes(clickId)) || (msg.text && json.includes(JSON.stringify(msg.text.trim())))) {
+        console.log(`[ENGINE] id=${ev.id} clique do fluxo aguardando — fica com o Base44`); return false;
+      }
+      ignoreWaiting = true; // botão de um menu antigo → clique novo
+    }
     const t0 = Date.now();
     const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'buttonClick', contact_phone: msg.from, company_id: contact.company_id, context: { connection_id: contact.connection_id, msg: msg.raw } }),
+      body: JSON.stringify({ action: 'buttonClick', contact_phone: msg.from, company_id: contact.company_id, context: { connection_id: contact.connection_id, msg: msg.raw, ignore_waiting: ignoreWaiting } }),
     });
     console.log(`[ENGINE] id=${ev.id} CLIQUE "${msg.text}" status=${res.status} ${(await res.text()).slice(0, 120)} em ${Date.now() - t0}ms`);
     return false;
