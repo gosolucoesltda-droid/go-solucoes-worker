@@ -75,7 +75,8 @@ function passesContactFilters(filters, contact) {
 
 async function startFlow(ev, flow, contact, msg) {
   const t0 = Date.now();
-  const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
+  // Não bloqueia: o repasse ao Base44 (salvar mensagem/contato) segue em paralelo
+  fetch(`${APP_URL}/functions/workerTrigger`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -85,8 +86,9 @@ async function startFlow(ev, flow, contact, msg) {
       company_id: contact.company_id,
       context: { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine' },
     }),
-  });
-  console.log(`[ENGINE] id=${ev.id} DISPAROU "${flow.name}" (${flow.trigger_type}) status=${res.status} em ${Date.now() - t0}ms`);
+  })
+    .then((res) => console.log(`[ENGINE] id=${ev.id} DISPAROU "${flow.name}" (${flow.trigger_type}) status=${res.status} em ${Date.now() - t0}ms`))
+    .catch((e) => console.error(`[ENGINE] id=${ev.id} falha ao disparar "${flow.name}":`, e.message));
 }
 
 async function claim(pool, flow, phone, secs) {
