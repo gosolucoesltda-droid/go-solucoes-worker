@@ -128,8 +128,9 @@ async function processEvent(ev, pool) {
   }
 
   const { rows: contacts } = await pool.query(
-    `select id, company_id, connection_id, subscriber_active, automation_paused_until, tags, custom_fields from crm_contacts where telefone = $1 order by updated_at desc limit 1`,
-    [msg.from]
+    `select id, company_id, connection_id, subscriber_active, automation_paused_until, tags, custom_fields from crm_contacts
+     where telefone = $1 and connection_id = (select connection_id from flows where phone_number_id = $2 limit 1) limit 1`,
+    [msg.from, ev.phone_number_id]
   );
   const contact = contacts[0];
   console.log(`[ENGINE] id=${ev.id} de=${msg.from} tipo=${msg.type} texto="${msg.text.slice(0, 60)}" contato=${contact ? contact.id : 'NOVO'}`);
