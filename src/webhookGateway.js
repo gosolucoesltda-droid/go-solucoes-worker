@@ -29,7 +29,7 @@ async function forward(getPool, ev) {
   const pool = getPool();
   try {
     if (engine.isPilot(ev.phone_number_id)) {
-      const handled = await engine.processEvent(ev).catch((e) => {
+      const handled = await engine.processEvent(ev, pool).catch((e) => {
         console.error(`[ENGINE] falhou id=${ev.id}, usando Base44:`, e.message);
         return false;
       });
