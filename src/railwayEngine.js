@@ -24,7 +24,7 @@ function parseMessage(body) {
   const msg = value.messages?.[0];
   if (!msg) return null; // status de entrega/leitura
   const text = msg.text?.body || msg.button?.text || msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '';
-  return { from: msg.from, type: msg.type, text, name: value.contacts?.[0]?.profile?.name || '' };
+  return { raw: msg, from: msg.from, type: msg.type, text, name: value.contacts?.[0]?.profile?.name || '' };
 }
 
 function cooldownSeconds(cfg = {}) {
@@ -139,7 +139,23 @@ async function processEvent(ev, pool) {
     return false;
   }
 
-  // Botões ficam com o Base44 (dependem de campanhas e menus aguardando clique)
+  if (msg.type === 'button' || msg.type === 'interactive') {
+    // Fluxo aguardando o clique → o Base44 retoma (resumeFlow)
+    const { rows: waiting } = await pool.query(
+      `select 1 from crm_flow_executions where contact_phone = $1 and company_id = $2 and status = 'waiting' limit 1`,
+      [msg.from, contact.company_id]
+    );
+    if (waiting.length) { console.log(`[ENGINE] id=${ev.id} clique com fluxo aguardando — fica com o Base44`); return false; }
+    const t0 = Date.now();
+    const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'buttonClick', contact_phone: msg.from, company_id: contact.company_id, context: { connection_id: contact.connection_id, msg: msg.raw } }),
+    });
+    console.log(`[ENGINE] id=${ev.id} CLIQUE "${msg.text}" status=${res.status} ${(await res.text()).slice(0, 120)} em ${Date.now() - t0}ms`);
+    return false;
+  }
+
   const types = msg.type === 'text' ? ['inbound_any', 'keyword'] : ['inbound_any'];
   const { rows: flows } = await pool.query(
     `select base44_id, name, trigger_type, trigger_config from flows where company_id = $1 and connection_id = $2 and status = 'active' and trigger_type = any($3)`,
