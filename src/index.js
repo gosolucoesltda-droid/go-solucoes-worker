@@ -715,6 +715,19 @@ function startTimeoutChecks() {
 
     // checkFlowTimeouts — stuck cleanup + flowEngine checkTimeouts
     try {
+      if (pgPool) {
+        const { rows } = await pgPool.query(
+          `select 1 from crm_flow_executions
+           where (status = 'running' and started_at < now() - interval '2 minutes')
+              or (status = 'waiting' and (
+                   delay_until <= now()
+                or (context->>'_wait_timeout_at')::timestamptz <= now()
+                or (context->>'_menu_timeout_at')::timestamptz <= now()
+                or not (context ? '_wait_type')))
+           limit 1`
+        );
+        if (!rows.length) return;
+      }
       await callBase44Function('checkFlowTimeouts', {});
     } catch (e) {
       console.warn('[TIMEOUT_CHECK] checkFlowTimeouts erro:', e.message);
