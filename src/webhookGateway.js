@@ -6,6 +6,7 @@
 // Eventos que falharem ficam 'pending' e são reenviados a cada 15s.
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
+const engine = require('./railwayEngine');
 
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
@@ -27,6 +28,16 @@ function phoneNumberIdOf(raw) {
 async function forward(getPool, ev) {
   const pool = getPool();
   try {
+    if (engine.isPilot(ev.phone_number_id)) {
+      const handled = await engine.processEvent(ev).catch((e) => {
+        console.error(`[ENGINE] falhou id=${ev.id}, usando Base44:`, e.message);
+        return false;
+      });
+      if (handled) {
+        await pool.query(`update webhook_events set status='done', attempts=attempts+1, processed_at=now() where id=$1`, [ev.id]);
+        return;
+      }
+    }
     const res = await fetch(`${APP_URL}/functions/whatsappWebhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': ev.signature },
@@ -60,7 +71,7 @@ async function handleWebhook(req, res, url, getPool) {
   }
 
   const { rows } = await getPool().query(
-    `insert into webhook_events (body, signature, phone_number_id) values ($1,$2,$3) returning id, body, signature`,
+    `insert into webhook_events (body, signature, phone_number_id) values ($1,$2,$3) returning id, body, signature, phone_number_id`,
     [raw, signature, phoneNumberIdOf(raw)]
   );
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -73,7 +84,7 @@ function startWebhookRetries(getPool) {
     const pool = getPool();
     if (!pool) return;
     const { rows } = await pool.query(
-      `select id, body, signature from webhook_events where status='pending' and received_at < now() - interval '20 seconds' order by received_at limit 20`
+      `select id, body, signature, phone_number_id from webhook_events where status='pending' and received_at < now() - interval '20 seconds' order by received_at limit 20`
     ).catch(() => ({ rows: [] }));
     for (const ev of rows) await forward(getPool, ev);
   }, RETRY_INTERVAL_MS);
