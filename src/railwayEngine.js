@@ -38,8 +38,8 @@ async function processEvent(ev, pool) {
   if (!contact) return false;
 
   const { rows: flows } = await pool.query(
-    `select base44_id, name, trigger_type, trigger_config from flows where company_id = $1 and status = 'active' and trigger_type = any($2)`,
-    [contact.company_id, INBOUND_TRIGGERS]
+    `select base44_id, name, trigger_type, trigger_config from flows where company_id = $1 and connection_id = $2 and status = 'active' and trigger_type = any($3)`,
+    [contact.company_id, contact.connection_id, INBOUND_TRIGGERS]
   );
   const lower = msg.text.toLowerCase();
   const matches = flows.filter((f) => {
