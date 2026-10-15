@@ -40,6 +40,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/health') return healthHandler(req, res);
   if (req.method === 'POST' && url.pathname === '/trigger') return triggerHandler(req, res);
   if (req.method === 'POST' && url.pathname === '/proxy-fetch') return proxyFetchHandler(req, res);
+   if (url.pathname === '/webhook/whatsapp' && (req.method === 'GET' || req.method === 'POST')) {
+    return handleWebhook(req, res, url, () => pgPool).catch((e) => {
+      console.error('[WEBHOOK] erro:', e.message);
+      if (!res.headersSent) { res.writeHead(500); res.end('Error'); }
+    });
+  }
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: false, error: 'Not found' }));
 });
@@ -253,6 +259,9 @@ async function processBatch(jobs) {
 
 async function processJob(job) {
   stats.processed++;
+   let success = false;
+  let errorMsg = null;
+  let retry = true;
   console.log(`[JOB] id=${job.id} tipo=${job.job_type} phone=${job.contact_phone || '-'}`);
   try {
     if (job.job_type === 'flow_trigger') {
@@ -497,6 +506,7 @@ async function main() {
   startReconciliation();
   startHeartbeat();
   startTimeoutChecks();
+   startWebhookRetries(() => pgPool);
 }
 
 main().catch(e => {
