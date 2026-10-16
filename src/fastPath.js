@@ -49,12 +49,25 @@ const VAR_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
 const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => m[1].toLowerCase() in vars);
 const render = (s, vars) => String(s || '').replace(VAR_RE, (_, k) => String(vars[k.toLowerCase()] ?? ''));
 
-function isSupported(node, vars) {
+// Atrasos curtos o Railway espera ele mesmo (limite total por execução); longos ficam com o Base44
+const MAX_WAIT_MS = 10000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const subWaitMs = (s) => s.type === 'delay' ? Math.min(Number(s.seconds || s.duration || 3), 55) * 1000
+  : s.type === 'typing' ? Math.min(Number(s.seconds || 3), 30) * 1000 : 0;
+const UNIT_MS = { seconds: 1000, minutes: 60000, hours: 3600000, days: 86400000 };
+function delayNodeMs(node) {
+  const d = node.data || node.config || {};
+  if (d.delay_type !== 'duration') return Infinity;
+  return (Number(d.duration) || 1) * (UNIT_MS[d.unit] || 3600000);
+}
+
+function isSupported(node, vars, waitLeft = MAX_WAIT_MS) {
   if (!node || node.type !== 'message') return false;
   const subs = (node.data || node.config || {}).sub_blocks || [];
   if (!subs.length) return false;
-  return subs.every((s) => s.type === 'text' && canRender(s.content, vars) &&
-    (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars)));
+  if (subs.reduce((t, s) => t + subWaitMs(s), 0) > waitLeft) return false;
+  return subs.every((s) => s.type === 'delay' || s.type === 'typing' || (s.type === 'text' && canRender(s.content, vars) &&
+    (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars))));
 }
 
 function payloadFor(to, text, buttons) {
@@ -148,16 +161,29 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const nodes = flow.nodes || [];
   const vars = contactVars({ telefone: phone, ...(contact || {}) });
   let node = nodes.find((n) => n.id === startNodeId);
-  // Passa direto pelas condições que o Railway sabe avaliar (o Base44 reavalia igual e pula o que já foi enviado)
-  const skipConditions = () => {
-    for (let i = 0; node?.type === 'condition' && i < 10; i++) {
+  opts.wait = opts.wait || { left: MAX_WAIT_MS };
+  const executed = [];
+  const messages = [];
+  const delays = [];
+  // Passa direto pelas condições e atrasos curtos (o Base44 reavalia as condições e pula o que já foi feito)
+  const skipConditions = async () => {
+    for (let i = 0; (node?.type === 'condition' || node?.type === 'delay') && i < 10; i++) {
+      if (node.type === 'delay') {
+        const ms = delayNodeMs(node);
+        if (ms > opts.wait.left) return false;
+        opts.wait.left -= ms;
+        await sleep(ms);
+        delays.push(node.id); executed.push(node.id);
+        node = nodes.find((n) => n.id === nextOf(node));
+        continue;
+      }
       const nx = conditionNext(node, contact || {});
       if (nx === undefined) return false;
       node = nodes.find((n) => n.id === nx);
     }
-    return node?.type !== 'condition';
+    return node?.type !== 'condition' && node?.type !== 'delay';
   };
-  if (!skipConditions()) return null;
+  if (!(await skipConditions())) return null;
   // Salto logo no início: segue direto para o fluxo destino
   const target = jumpTarget(node);
   if (target && loadFlow && depth < 3) {
@@ -165,13 +191,15 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     const sub = dest && await runFast(dest, firstNodeId(dest), opts, depth + 1);
     return sub ? { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null, _railway_jump: { flow_id: target, ...sub } } : null;
   }
-  if (!isSupported(node, vars)) return null;
+  if (!isSupported(node, vars, opts.wait.left)) {
+    return delays.length ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays } : null;
+  }
   const creds = await getCreds(companyId, connectionId);
-  const executed = [];
-  const messages = [];
   let stop = null;
-  while (node && isSupported(node, vars) && executed.length < 10 && !stop) {
+  while (node && isSupported(node, vars, opts.wait.left) && executed.length < 15 && !stop) {
     for (const raw of (node.data || node.config).sub_blocks) {
+      const wait = subWaitMs(raw);
+      if (wait) { opts.wait.left -= wait; await sleep(wait); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
       const res = await fetch(`https://graph.facebook.com/v22.0/${creds.phone_number_id}/messages`, {
@@ -185,9 +213,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       if (buttons.some((b) => b.type !== 'url')) { stop = node.id; break; }
     }
     executed.push(node.id);
-    if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); skipConditions(); }
+    if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
