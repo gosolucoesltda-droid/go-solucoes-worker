@@ -75,7 +75,14 @@ function passesContactFilters(filters, contact) {
 }
 
 // Fase 1: envia os blocos de texto/botões direto pela Meta; o Base44 só registra e continua
-async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false) {
+// Variáveis do fluxo que estava aguardando + opção clicada (para {{opcao_selecionada}} / {{ultima_resposta}})
+function clickCtx(ctx, msg) {
+  const title = msg.raw.interactive?.button_reply?.title || msg.raw.interactive?.list_reply?.title || msg.text || '';
+  const key = msg.raw.interactive?.list_reply ? 'list_selected_title' : 'button_selected_title';
+  return { ...(ctx || {}), [key]: title, last_reply: title };
+}
+
+async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false, context = {}) {
   const { rows: active } = force ? { rows: [] } : await pool.query(
     `select 1 from crm_flow_executions where flow_id = $1 and contact_phone = $2 and status in ('running','waiting') limit 1`,
     [flow.base44_id, msg.from]
@@ -86,7 +93,7 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false)
     const loadFlow = async (id) => (await pool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, contact.connection_id]
     )).rows[0] || null;
-    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow });
+    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow, context });
     let total = 0;
     for (let r = fast; r; r = r._railway_jump) total += (r._railway_messages || []).length;
     if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${total} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
@@ -172,7 +179,7 @@ async function processEvent(ev, pool) {
   if (msg.type === 'button' || msg.type === 'interactive') {
     // Fluxo aguardando o clique → o Base44 retoma (resumeFlow)
     const { rows: waiting } = await pool.query(
-      `select e.current_node_id, f.nodes from crm_flow_executions e left join flows f on f.base44_id = e.flow_id
+      `select e.current_node_id, e.context, f.nodes from crm_flow_executions e left join flows f on f.base44_id = e.flow_id
        where e.contact_phone = $1 and e.company_id = $2 and e.connection_id = $3 and e.status = 'waiting' order by e.created_at desc limit 1`,
       [msg.from, contact.company_id, contact.connection_id]
     );
@@ -194,7 +201,7 @@ async function processEvent(ev, pool) {
             [contact.company_id, contact.connection_id]
           );
           const hit = findClickedItem(botFlows, clickId);
-          const railway = hit ? await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, true) : null;
+          const railway = hit ? await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, true, clickCtx(waiting[0].context, msg)) : null;
           if (railway) {
             const t2 = Date.now();
             const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
@@ -227,7 +234,7 @@ async function processEvent(ev, pool) {
         [contact.company_id, contact.connection_id]
       );
       const hit = findClickedItem(botFlows, itemId);
-      if (hit) railway = await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg);
+      if (hit) railway = await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, false, clickCtx({}, msg));
     }
     const t0 = Date.now();
     const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
