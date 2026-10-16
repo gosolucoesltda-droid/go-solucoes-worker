@@ -78,12 +78,86 @@ function jumpTarget(node) {
   return target && (d.mode === 'transfer' || c.mode === 'transfer') ? target : null;
 }
 
+// Condição (mesma regra do Base44): devolve o próximo nó, ou undefined se o Railway não sabe avaliar
+function compareText(actual, op, value) {
+  const a = String(actual || '').toLowerCase();
+  const v = String(value || '').toLowerCase();
+  switch (op) {
+    case 'equals': return a === v;
+    case 'not_equals': return a !== v;
+    case 'contains': return a.includes(v);
+    case 'not_contains': return !a.includes(v);
+    case 'starts_with': return a.startsWith(v);
+    case 'ends_with': return a.endsWith(v);
+    case 'empty': case 'is_empty': return !actual;
+    case 'not_empty': case 'is_not_empty': return !!actual;
+    default: return undefined;
+  }
+}
+function evalFilter(f, c) {
+  let field = f.field || '';
+  if (!field && f.field_type === 'tag') field = 'tag';
+  if (!field && f.field_type === 'custom') field = 'custom_field';
+  const { operator: op, value } = f;
+  switch (field) {
+    case 'tag': { const tags = c.tags || []; return op === 'has_tag' || op === 'is' ? tags.includes(value) : !tags.includes(value); }
+    case 'nome': case 'contact_name': return compareText(c.nome, op, value);
+    case 'email': case 'contact_email': return compareText(c.email, op, value);
+    case 'telefone': case 'contact_phone': return compareText(c.telefone, op, value);
+    case 'empresa': case 'contact_empresa': return compareText(c.empresa, op, value);
+    case 'custom_field': {
+      const v = (c.custom_fields || {})[f.field_key || f.key || f.field];
+      if (['empty', 'is_empty', 'not_empty', 'is_not_empty'].includes(op)) {
+        const isEmpty = !v || String(v).trim() === '';
+        return op === 'empty' || op === 'is_empty' ? isEmpty : !isEmpty;
+      }
+      if (['gt', 'lt', 'gte', 'lte'].includes(op)) {
+        const a = Number(v), b = Number(value);
+        return op === 'gt' ? a > b : op === 'lt' ? a < b : op === 'gte' ? a >= b : a <= b;
+      }
+      return compareText(v, op, value);
+    }
+    default: return undefined;
+  }
+}
+function evalAll(filters, combine, c) {
+  if (!filters?.length) return false;
+  const rs = filters.map((f) => evalFilter(f, c));
+  if (rs.includes(undefined)) return undefined;
+  return combine === 'OR' ? rs.some(Boolean) : rs.every(Boolean);
+}
+function conditionNext(node, c) {
+  const d = node.data || node.config || {};
+  const noMatch = d.no_match_next || node.next_node_false_id || d.next_node_false_id || null;
+  if ((d.groups || []).length) {
+    for (const g of d.groups) {
+      const r = evalAll(g.conditions || g.filters || [], g.combine || 'AND', c);
+      if (r === undefined) return undefined;
+      if (r) return g.next_node_id ?? null;
+    }
+    return noMatch;
+  }
+  const r = evalAll(d.filters || [], d.combine || 'AND', c);
+  if (r === undefined) return undefined;
+  return r ? nextOf(node) : noMatch;
+}
+
 // Retorna null quando nada foi enviado (o Base44 faz tudo como antes)
 async function runFast(flow, startNodeId, opts, depth = 0) {
   const { companyId, connectionId, phone, contact, loadFlow } = opts;
   const nodes = flow.nodes || [];
   const vars = contactVars({ telefone: phone, ...(contact || {}) });
   let node = nodes.find((n) => n.id === startNodeId);
+  // Passa direto pelas condições que o Railway sabe avaliar (o Base44 reavalia igual e pula o que já foi enviado)
+  const skipConditions = () => {
+    for (let i = 0; node?.type === 'condition' && i < 10; i++) {
+      const nx = conditionNext(node, contact || {});
+      if (nx === undefined) return false;
+      node = nodes.find((n) => n.id === nx);
+    }
+    return node?.type !== 'condition';
+  };
+  if (!skipConditions()) return null;
   // Salto logo no início: segue direto para o fluxo destino
   const target = jumpTarget(node);
   if (target && loadFlow && depth < 3) {
@@ -111,7 +185,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       if (buttons.some((b) => b.type !== 'url')) { stop = node.id; break; }
     }
     executed.push(node.id);
-    if (!stop) node = nodes.find((n) => n.id === nextOf(node));
+    if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); skipConditions(); }
   }
   const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
