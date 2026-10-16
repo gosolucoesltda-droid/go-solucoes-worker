@@ -19,6 +19,7 @@ const http = require('http');
 const { Client, Pool } = require('pg');
 const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
+const { startWaitWatcher } = require('./waitWatcher');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -819,6 +820,7 @@ async function main() {
   startHeartbeat();
   startTimeoutChecks();
   startWebhookRetries(() => pgPool);
+  startWaitWatcher(pgPool, callBase44Function);
 }
 
 main().catch(e => {
