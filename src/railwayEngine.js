@@ -87,7 +87,9 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false)
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, contact.connection_id]
     )).rows[0] || null;
     const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow });
-    if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${fast._railway_messages.length} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
+    let total = 0;
+    for (let r = fast; r; r = r._railway_jump) total += (r._railway_messages || []).length;
+    if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${total} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
     return fast;
   } catch (e) {
     console.error(`[ENGINE] id=${ev.id} envio direto falhou (Base44 assume):`, e.message);
