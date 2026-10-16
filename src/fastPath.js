@@ -69,11 +69,28 @@ function payloadFor(to, text, buttons) {
   return { messaging_product: 'whatsapp', to, type: 'text', text: { body: text } };
 }
 
-// Retorna null quando o primeiro nó não é suportado (o Base44 faz tudo como antes)
-async function runFast(flow, startNodeId, { companyId, connectionId, phone, contact }) {
+// Salto "transferir" (mesma leitura do Base44): devolve o fluxo destino ou null
+function jumpTarget(node) {
+  if (node?.type !== 'flow_jump') return null;
+  const d = node.data || node.config || {};
+  const c = node.config || node.data || {};
+  const target = d.target_flow_id || c.target_flow_id;
+  return target && (d.mode === 'transfer' || c.mode === 'transfer') ? target : null;
+}
+
+// Retorna null quando nada foi enviado (o Base44 faz tudo como antes)
+async function runFast(flow, startNodeId, opts, depth = 0) {
+  const { companyId, connectionId, phone, contact, loadFlow } = opts;
   const nodes = flow.nodes || [];
   const vars = contactVars({ telefone: phone, ...(contact || {}) });
   let node = nodes.find((n) => n.id === startNodeId);
+  // Salto logo no início: segue direto para o fluxo destino
+  const target = jumpTarget(node);
+  if (target && loadFlow && depth < 3) {
+    const dest = await loadFlow(target);
+    const sub = dest && await runFast(dest, firstNodeId(dest), opts, depth + 1);
+    return sub ? { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null, _railway_jump: { flow_id: target, ...sub } } : null;
+  }
   if (!isSupported(node, vars)) return null;
   const creds = await getCreds(companyId, connectionId);
   const executed = [];
@@ -96,7 +113,15 @@ async function runFast(flow, startNodeId, { companyId, connectionId, phone, cont
     executed.push(node.id);
     if (!stop) node = nodes.find((n) => n.id === nextOf(node));
   }
-  return { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop };
+  // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
+  const target2 = !stop && jumpTarget(node);
+  if (target2 && loadFlow && depth < 3) {
+    const dest = await loadFlow(target2).catch(() => null);
+    const sub = dest && await runFast(dest, firstNodeId(dest), opts, depth + 1).catch((e) => { console.error('[FAST] salto falhou:', e.message); return null; });
+    if (sub) result._railway_jump = { flow_id: target2, ...sub };
+  }
+  return result;
 }
 
 function firstNodeId(flow) {
