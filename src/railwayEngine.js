@@ -75,8 +75,8 @@ function passesContactFilters(filters, contact) {
 }
 
 // Fase 1: envia os blocos de texto/botões direto pela Meta; o Base44 só registra e continua
-async function tryFast(ev, pool, flow, startNodeId, contact, msg) {
-  const { rows: active } = await pool.query(
+async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false) {
+  const { rows: active } = force ? { rows: [] } : await pool.query(
     `select 1 from crm_flow_executions where flow_id = $1 and contact_phone = $2 and status in ('running','waiting') limit 1`,
     [flow.base44_id, msg.from]
   );
@@ -181,6 +181,25 @@ async function processEvent(ev, pool) {
         // Railway retoma o fluxo; a trava impede o Base44 de retomar de novo
         if (!(await claim(pool, { base44_id: `resume:${msg.raw.id}` }, msg.from, 86400))) {
           console.log(`[ENGINE] id=${ev.id} retomada já feita — ignorado`); return false;
+        }
+        // Próximo bloco é texto simples → Railway envia já; o Base44 encerra a espera e continua dali
+        if (msg.type === 'interactive' && clickId) {
+          const { rows: botFlows } = await pool.query(
+            `select base44_id, name, nodes from flows where company_id = $1 and connection_id = $2 and status = 'active'`,
+            [contact.company_id, contact.connection_id]
+          );
+          const hit = findClickedItem(botFlows, clickId);
+          const railway = hit ? await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, true) : null;
+          if (railway) {
+            const t2 = Date.now();
+            const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'buttonClick', contact_phone: msg.from, company_id: contact.company_id, context: { connection_id: contact.connection_id, msg: msg.raw, ignore_waiting: true, railway } }),
+            });
+            console.log(`[ENGINE] id=${ev.id} CLIQUE (aguardando) "${msg.text}" status=${res.status} em ${Date.now() - t2}ms`);
+            return false;
+          }
         }
         const t1 = Date.now();
         fetch(`${APP_URL}/functions/workerTrigger`, {
