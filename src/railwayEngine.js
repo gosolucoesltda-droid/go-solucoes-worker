@@ -83,7 +83,10 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false)
   if (active.length) return null;
   const t = Date.now();
   try {
-    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact });
+    const loadFlow = async (id) => (await pool.query(
+      `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, contact.connection_id]
+    )).rows[0] || null;
+    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow });
     if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${fast._railway_messages.length} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
     return fast;
   } catch (e) {
