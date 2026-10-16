@@ -18,6 +18,7 @@
 const http = require('http');
 const { Client, Pool } = require('pg');
 const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
+const { runFast, firstNodeId } = require('./fastPath');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -438,6 +439,31 @@ async function processJob(job) {
 }
 
 // ── Processar flow_trigger ──
+// Agendados/por data: Railway envia os primeiros blocos direto pela Meta; o Base44 só registra e continua
+async function fastJob(job, flowId, connectionId) {
+  try {
+    const { rows: [flow] } = await pgPool.query(
+      `select base44_id, name, nodes, trigger_config from flows where base44_id = $1 and status = 'active' limit 1`, [flowId]);
+    if (!flow || flow.trigger_config?.contact_filters?.length) return null; // filtros ficam com o Base44
+    const { rows: [contact] } = await pgPool.query(
+      `select id, company_id, connection_id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields from crm_contacts
+       where telefone = $1 and connection_id = $2 limit 1`, [job.contact_phone, connectionId]);
+    if (!contact || contact.subscriber_active === false || (contact.automation_paused_until && new Date(contact.automation_paused_until) > new Date())) return null;
+    const { rows: active } = await pgPool.query(
+      `select 1 from crm_flow_executions where flow_id = $1 and contact_phone = $2 and status in ('running','waiting') limit 1`, [flowId, job.contact_phone]);
+    if (active.length) return null;
+    const loadFlow = async (id) => (await pgPool.query(
+      `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, connectionId])).rows[0] || null;
+    const t = Date.now();
+    const fast = await runFast(flow, firstNodeId(flow), { companyId: job.company_id, connectionId, phone: job.contact_phone, contact, loadFlow });
+    if (fast) console.log(`[JOB] id=${job.id} RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
+    return fast;
+  } catch (e) {
+    console.error(`[JOB] id=${job.id} envio direto falhou (Base44 assume):`, e.message);
+    return null;
+  }
+}
+
 async function processFlowTriggerJob(job) {
   const context = job.context || {};
   const flowBase44Id = job.flow_base44_id;
@@ -473,6 +499,8 @@ async function processFlowTriggerJob(job) {
     console.log(`[JOB] delay-resume detectado — pulando verificação no Supabase (flow=${flowBase44Id})`);
   }
 
+  const fast = isDelayResume ? null : await fastJob(job, flowBase44Id, flowConnectionId);
+
   // Chamar Base44 workerTrigger (tem rate limit + contact filters)
   const result = await callBase44Function('workerTrigger', {
     action: 'startFlow',
@@ -481,6 +509,8 @@ async function processFlowTriggerJob(job) {
     company_id: job.company_id,
     context: {
       ...context,
+      ...(fast || {}),
+      ...(fast ? { _source: 'railway_engine' } : {}),
       reference_id: job.reference_id,
       connection_id: flowConnectionId,
     },
@@ -713,7 +743,7 @@ function startTimeoutChecks() {
     // quando o campo muda (contactFieldUpdater) e disparados via NOTIFY. A varredura
     // de segurança (repetir todo ano) roda 1x/dia no Base44.
 
-    // checkFlowTimeouts — stuck cleanup + flowEngine checkTimeouts
+    // checkFlowTimeouts — só chama o Base44 quando o espelho no Supabase mostra algo vencido
     try {
       if (pgPool) {
         const { rows } = await pgPool.query(
