@@ -279,6 +279,53 @@ function applyActions(node, sim, vars) {
   return dirty ? 'dirty' : true;
 }
 
+// Requisição de API (mesma montagem do Base44). O Base44 reaproveita a resposta para mapear e salvar campos.
+// false = usa variável que o Railway não conhece (fica com o Base44)
+async function runApi(node, vars) {
+  const cfg = { ...(node.config || {}), ...(node.data || {}) };
+  if (!cfg.url) return false;
+  const method = cfg.method || 'POST';
+  const bodyType = cfg.body_type || 'json';
+  const parts = [cfg.url, ...(cfg.headers || []).map((h) => h.value), ...(cfg.params || []).map((p) => p.value),
+    ...(method === 'GET' || method === 'DELETE' ? [] : bodyType === 'json' ? [cfg.body_json] : bodyType === 'form' ? (cfg.body_form || []).map((f) => f.value) : [cfg.body_raw])];
+  if (!parts.every((p) => canRender(p, vars))) return false;
+  let url = render(cfg.url, vars);
+  const headers = {};
+  for (const h of cfg.headers || []) { const k = (h.key || '').trim(); if (/^[!#$%&'*+\-.^_`|~0-9a-zA-Z]+$/.test(k)) headers[k] = render(h.value, vars); }
+  const hasCT = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
+  const opts = { method, headers, signal: AbortSignal.timeout(20000) };
+  if (method === 'GET' || method === 'DELETE') {
+    const qp = new URLSearchParams();
+    for (const p of cfg.params || []) if (p.key) qp.set(p.key, render(p.value, vars));
+    const qs = qp.toString();
+    if (qs) url += (url.includes('?') ? '&' : '?') + qs;
+  } else if (bodyType === 'json') { if (!hasCT) headers['Content-Type'] = 'application/json'; opts.body = render(cfg.body_json || '{}', vars); }
+  else if (bodyType === 'form') {
+    const fd = new URLSearchParams();
+    for (const f of cfg.body_form || []) if (f.key) fd.set(f.key, render(f.value, vars));
+    opts.body = fd.toString(); if (!hasCT) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+  } else opts.body = render(cfg.body_raw || '', vars);
+  const nextErr = node.next_node_error_id ?? node.data?.next_node_error_id ?? null;
+  try {
+    const res = await fetch(url, opts);
+    const text = await res.text();
+    let json = null; try { json = JSON.parse(text); } catch {}
+    let stable = true; const mapped = {};
+    for (const m of cfg.response_mapping || []) {
+      if (!m.response_path || !m.field_key) continue;
+      let v = json;
+      for (const k of m.response_path.split('.')) v = v && typeof v === 'object' ? v[k] : undefined;
+      if (v === undefined) continue;
+      if (/^\d{10,13}$/.test(String(v))) stable = false; // pode virar data no Base44
+      vars[m.field_key.toLowerCase()] = String(v); mapped[m.field_key] = String(v);
+    }
+    if (cfg.save_status_to) vars[cfg.save_status_to.toLowerCase()] = String(res.status);
+    return { mapped, saved: { ok: res.ok, status: res.status, text }, next: res.ok ? nextOf(node) : nextErr, stable: stable && (res.ok || !!nextErr) };
+  } catch (e) {
+    return { saved: { error: e.message }, next: nextErr, stable: false };
+  }
+}
+
 // Aleatório (mesma regra do Base44): sorteio por porcentagem
 function pickRandom(vs) {
   if (!vs.length) return null;
@@ -306,7 +353,17 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const sim = { ...(contact || {}), tags: [...((contact || {}).tags || [])], custom_fields: { ...((contact || {}).custom_fields || {}) } };
   let dirty = false;
   const skipConditions = async () => {
-    for (let i = 0; ['condition', 'delay', 'random', 'action'].includes(node?.type) && i < 15; i++) {
+    for (let i = 0; ['condition', 'delay', 'random', 'action', 'api_request'].includes(node?.type) && i < 15; i++) {
+      if (node.type === 'api_request') {
+        const r = await runApi(node, vars);
+        if (!r) return false;
+        opts.api[node.id] = r.saved;
+        Object.assign(sim.custom_fields, r.mapped || {});
+        // Resposta que o Base44 pode tratar diferente: ele segue daqui com a resposta salva
+        if (!r.stable || !r.next) { node = null; return true; }
+        node = nodes.find((n) => n.id === r.next);
+        continue;
+      }
       if (node.type === 'action') {
         const r = applyActions(node, sim, vars);
         if (r === false) return false;
@@ -335,9 +392,12 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       if (nx === undefined) return false;
       node = nodes.find((n) => n.id === nx);
     }
-    return !['condition', 'delay', 'random', 'action'].includes(node?.type);
+    return !['condition', 'delay', 'random', 'action', 'api_request'].includes(node?.type);
   };
-  if (!(await skipConditions())) return null;
+  opts.api = opts.api || {};
+  const partial = () => (delays.length || Object.keys(opts.api).length)
+    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api } : null;
+  if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
   const target = jumpTarget(node);
@@ -347,7 +407,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     return sub ? { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null, _railway_jump: { flow_id: target, ...sub } } : null;
   }
   if (!isSupported(node, vars, opts.wait.left)) {
-    return delays.length ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays } : null;
+    return partial();
   }
   const creds = await getCreds(companyId, connectionId);
   let stop = null;
@@ -386,7 +446,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, ...(opts.question ? { _railway_question_node: opts.question } : {}) };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, ...(opts.question ? { _railway_question_node: opts.question } : {}) };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
