@@ -83,7 +83,7 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false)
   if (active.length) return null;
   const t = Date.now();
   try {
-    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from });
+    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact });
     if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${fast._railway_messages.length} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
     return fast;
   } catch (e) {
@@ -152,7 +152,7 @@ async function processEvent(ev, pool) {
   }
 
   const { rows: contacts } = await pool.query(
-    `select id, company_id, connection_id, subscriber_active, automation_paused_until, tags, custom_fields, created_at from crm_contacts
+    `select id, company_id, connection_id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields, created_at from crm_contacts
      where telefone = $1 and connection_id = (select connection_id from flows where phone_number_id = $2 limit 1) limit 1`,
     [msg.from, ev.phone_number_id]
   );
