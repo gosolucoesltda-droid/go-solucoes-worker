@@ -87,7 +87,7 @@ function templateOk(s, vars) {
   const tpl = hit && hit.exp > Date.now() ? hit.tpl : null;
   if (!tpl) return false;
   const btns = tpl.components?.find((c) => c.type === 'BUTTONS')?.buttons || [];
-  return !btns.some((b) => b.type === 'QUICK_REPLY') && tplParams(s).every((p) => canRender(p, vars)) && canRender(s.header_image_url, vars);
+  return tplParams(s).every((p) => canRender(p, vars)) && canRender(s.header_image_url, vars);
 }
 async function sendTemplate(creds, to, s, vars) {
   const lang = s.template_language || 'pt_BR';
@@ -281,7 +281,13 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     for (const raw of (node.data || node.config).sub_blocks) {
       const wait = subWaitMs(raw);
       if (wait) { opts.wait.left -= wait; await sleep(wait); continue; }
-      if (raw.type === 'template') { messages.push(await sendTemplate(creds, phone, raw, vars)); continue; }
+      if (raw.type === 'template') {
+        const m = await sendTemplate(creds, phone, raw, vars);
+        messages.push(m);
+        // Botões de resposta: para aqui; o clique segue pelo botão do template
+        if (m.template_buttons.some((b) => b.type === 'QUICK_REPLY')) { stop = node.id; break; }
+        continue;
+      }
       if (['image', 'audio', 'video', 'file'].includes(raw.type)) { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
