@@ -111,6 +111,7 @@ function isSupported(node, vars, waitLeft = MAX_WAIT_MS) {
     ((s.type === 'image' || s.type === 'video') && s.url && canRender(s.url, vars) && canRender(s.caption, vars)) ||
     (s.type === 'file' && s.url && canRender(s.url, vars) && canRender(s.filename || s.display_name, vars)) ||
     (s.type === 'list' && listSections({ id: node.id }, s).length) ||
+    (s.type === 'question' && String(s.question_text ?? s.question ?? '').trim() && canRender(s.question_text ?? s.question, vars)) ||
     (s.type === 'audio' && s.url && canRender(s.url, vars)) || (s.type === 'text' && canRender(s.content, vars) &&
     (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars))));
 }
@@ -362,6 +363,13 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         continue;
       }
       if (raw.type === 'list') { messages.push(await sendList(creds, phone, node, raw)); stop = node.id; break; }
+      if (raw.type === 'question') {
+        // Pergunta: envia o texto e para; o Base44 registra a espera pela resposta
+        const text = render(raw.question_text ?? raw.question, vars);
+        const data = await metaPost(creds, 'messages', payloadFor(phone, text, []));
+        messages.push({ body: text, buttons: [], wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
+        stop = node.id; opts.question = node.id; break;
+      }
       if (['image', 'audio', 'video', 'file'].includes(raw.type)) { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
@@ -378,7 +386,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, ...(opts.question ? { _railway_question_node: opts.question } : {}) };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
