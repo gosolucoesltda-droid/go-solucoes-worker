@@ -407,6 +407,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const r = applyActions(node, sim, vars);
         if (r === false) return false;
         if (r === 'dirty') dirty = true;
+        opts.actionAt[node.id] = new Date().toISOString();
         node = nodes.find((n) => n.id === nextOf(node));
         continue;
       }
@@ -434,8 +435,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     return !['condition', 'delay', 'random', 'action', 'api_request'].includes(node?.type);
   };
   opts.api = opts.api || {};
+  opts.actionAt = opts.actionAt || {};
   const partial = () => (delays.length || Object.keys(opts.api).length)
-    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api } : null;
+    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt } : null;
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
@@ -485,7 +487,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, ...(opts.question ? { _railway_question_node: opts.question } : {}) };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt, ...(opts.question ? { _railway_question_node: opts.question } : {}) };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
