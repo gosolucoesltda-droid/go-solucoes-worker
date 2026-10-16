@@ -110,8 +110,32 @@ function isSupported(node, vars, waitLeft = MAX_WAIT_MS) {
   return subs.every((s) => s.type === 'delay' || s.type === 'typing' || s.type === 'template' ||
     ((s.type === 'image' || s.type === 'video') && s.url && canRender(s.url, vars) && canRender(s.caption, vars)) ||
     (s.type === 'file' && s.url && canRender(s.url, vars) && canRender(s.filename || s.display_name, vars)) ||
+    (s.type === 'list' && listSections({ id: node.id }, s).length) ||
     (s.type === 'audio' && s.url && canRender(s.url, vars)) || (s.type === 'text' && canRender(s.content, vars) &&
     (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars))));
+}
+
+// Menu de lista (mesmo formato e IDs do Base44); o clique segue pelo item escolhido
+function listSections(node, sub) {
+  const prefix = sanitize(node.id || 'n').slice(-20);
+  const raw = sub.rows?.length ? sub.rows : (sub.sections || []);
+  return raw.map((s, si) => ({
+    title: ((s.title || '').trim() || `Seção ${si + 1}`).slice(0, 24),
+    rows: (s.rows || s.items || []).filter((it) => it.title && it.id).map((it) => ({
+      id: sanitize(`${prefix}_${it.id}`).slice(0, 200), title: it.title.slice(0, 24),
+      ...(it.description ? { description: it.description.slice(0, 72) } : {}),
+    })),
+  })).filter((s) => s.rows.length);
+}
+async function sendList(creds, to, node, sub) {
+  const sections = listSections(node, sub);
+  const body = sub.body || 'Selecione uma opção';
+  const button = sub.button_label || 'Ver opções';
+  const interactive = { type: 'list', body: { text: body.slice(0, 4096) }, action: { button: button.slice(0, 20), sections } };
+  if (sub.header) interactive.header = { type: 'text', text: sub.header.slice(0, 60) };
+  if (sub.footer) interactive.footer = { text: sub.footer.slice(0, 60) };
+  const data = await metaPost(creds, 'messages', { messaging_product: 'whatsapp', to, type: 'interactive', interactive });
+  return { tipo: 'list', body, list: { header: sub.header || null, footer: sub.footer || null, button_label: button, sections }, buttons: [], wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() };
 }
 
 function payloadFor(to, text, buttons) {
@@ -337,6 +361,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         if (m.template_buttons.some((b) => b.type === 'QUICK_REPLY')) { stop = node.id; break; }
         continue;
       }
+      if (raw.type === 'list') { messages.push(await sendList(creds, phone, node, raw)); stop = node.id; break; }
       if (['image', 'audio', 'video', 'file'].includes(raw.type)) { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
