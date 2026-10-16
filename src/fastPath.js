@@ -66,7 +66,9 @@ function isSupported(node, vars, waitLeft = MAX_WAIT_MS) {
   const subs = (node.data || node.config || {}).sub_blocks || [];
   if (!subs.length) return false;
   if (subs.reduce((t, s) => t + subWaitMs(s), 0) > waitLeft) return false;
-  return subs.every((s) => s.type === 'delay' || s.type === 'typing' || (s.type === 'text' && canRender(s.content, vars) &&
+  return subs.every((s) => s.type === 'delay' || s.type === 'typing' ||
+    (s.type === 'image' && s.url && canRender(s.url, vars) && canRender(s.caption, vars)) ||
+    (s.type === 'audio' && s.url && canRender(s.url, vars)) || (s.type === 'text' && canRender(s.content, vars) &&
     (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars))));
 }
 
@@ -80,6 +82,35 @@ function payloadFor(to, text, buttons) {
     return { messaging_product: 'whatsapp', to, type: 'interactive', interactive: { type: 'button', body: { text }, action: { buttons: reply.map((b) => ({ type: 'reply', reply: { id: b.id, title: b.text.slice(0, 20) } })) } } };
   }
   return { messaging_product: 'whatsapp', to, type: 'text', text: { body: text } };
+}
+
+// Imagem por link; áudio baixado e reenviado à Meta como mensagem de voz (igual ao Base44)
+async function metaPost(creds, path, body, json = true) {
+  const res = await fetch(`https://graph.facebook.com/v22.0/${creds.phone_number_id}/${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${creds.access_token}`, ...(json ? { 'Content-Type': 'application/json' } : {}) },
+    body: json ? JSON.stringify(body) : body,
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(`Meta: ${data.error.message}`);
+  return data;
+}
+async function sendMedia(creds, to, sub, vars) {
+  const url = render(sub.url, vars);
+  const at = () => new Date().toISOString();
+  if (sub.type === 'image') {
+    const caption = render(sub.caption, vars);
+    const data = await metaPost(creds, 'messages', { messaging_product: 'whatsapp', to, type: 'image', image: caption ? { link: url, caption } : { link: url } });
+    return { tipo: 'image', body: caption || 'Imagem', media_url: url, buttons: [], wa_id: data.messages?.[0]?.id || null, at: at() };
+  }
+  const file = await fetch(url);
+  if (!file.ok) throw new Error(`áudio HTTP ${file.status}`);
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('file', new Blob([await file.arrayBuffer()], { type: 'audio/ogg' }), 'audio.ogg');
+  const up = await metaPost(creds, 'media', form, false);
+  const data = await metaPost(creds, 'messages', { messaging_product: 'whatsapp', to, type: 'audio', audio: { id: up.id, voice: true } });
+  return { tipo: 'audio', body: 'Áudio', audio_media_id: up.id, buttons: [], wa_id: data.messages?.[0]?.id || null, at: at() };
 }
 
 // Salto "transferir" (mesma leitura do Base44): devolve o fluxo destino ou null
@@ -200,6 +231,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     for (const raw of (node.data || node.config).sub_blocks) {
       const wait = subWaitMs(raw);
       if (wait) { opts.wait.left -= wait; await sleep(wait); continue; }
+      if (raw.type === 'image' || raw.type === 'audio') { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
       const res = await fetch(`https://graph.facebook.com/v22.0/${creds.phone_number_id}/messages`, {
