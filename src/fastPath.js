@@ -502,4 +502,4 @@ function findClickedItem(flows, itemId) {
   return null;
 }
 
-module.exports = { runFast, firstNodeId, findClickedItem };
+module.exports = { runFast, firstNodeId, findClickedItem, getCreds, metaPost, payloadFor };
