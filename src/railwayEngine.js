@@ -7,6 +7,7 @@
 // Sempre retorna false: o Base44 continua salvando a mensagem e cuidando
 // de botões, mídia e demais gatilhos.
 // ═══════════════════════════════════════════════════════════
+const { runFast, firstNodeId, findClickedItem } = require('./fastPath');
 const PILOT_IDS = (process.env.RAILWAY_ENGINE_PHONE_IDS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
@@ -73,7 +74,26 @@ function passesContactFilters(filters, contact) {
   return true;
 }
 
-async function startFlow(ev, flow, contact, msg) {
+// Fase 1: envia os blocos de texto/botões direto pela Meta; o Base44 só registra e continua
+async function tryFast(ev, pool, flow, startNodeId, contact, msg) {
+  const { rows: active } = await pool.query(
+    `select 1 from crm_flow_executions where flow_id = $1 and contact_phone = $2 and status in ('running','waiting') limit 1`,
+    [flow.base44_id, msg.from]
+  );
+  if (active.length) return null;
+  const t = Date.now();
+  try {
+    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from });
+    if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${fast._railway_messages.length} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
+    return fast;
+  } catch (e) {
+    console.error(`[ENGINE] id=${ev.id} envio direto falhou (Base44 assume):`, e.message);
+    return null;
+  }
+}
+
+async function startFlow(ev, flow, contact, msg, pool) {
+  const fast = await tryFast(ev, pool, flow, firstNodeId(flow), contact, msg);
   const t0 = Date.now();
   // Não bloqueia: o repasse ao Base44 (salvar mensagem/contato) segue em paralelo
   fetch(`${APP_URL}/functions/workerTrigger`, {
@@ -84,7 +104,7 @@ async function startFlow(ev, flow, contact, msg) {
       flow_id: flow.base44_id,
       contact_phone: msg.from,
       company_id: contact.company_id,
-      context: { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine' },
+      context: { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine', ...(fast || {}) },
     }),
   })
     .then((res) => console.log(`[ENGINE] id=${ev.id} DISPAROU "${flow.name}" (${flow.trigger_type}) status=${res.status} em ${Date.now() - t0}ms`))
@@ -110,7 +130,7 @@ async function startInboundAny(ev, pool, flow, contact, msg) {
     return console.log(`[ENGINE] id=${ev.id} "${flow.name}" em cooldown — não dispara`);
   }
   if (!(await claim(pool, flow, msg.from, Math.min(secs, Math.max(10, (Date.now() - createdAt.getTime()) / 1000))))) return console.log(`[ENGINE] id=${ev.id} "${flow.name}" já disparado — ignorado`);
-  await startFlow(ev, flow, contact, msg);
+  await startFlow(ev, flow, contact, msg, pool);
 }
 
 async function startKeyword(ev, pool, flow, contact, msg) {
@@ -121,7 +141,7 @@ async function startKeyword(ev, pool, flow, contact, msg) {
   );
   if (active.length) return console.log(`[ENGINE] id=${ev.id} "${flow.name}" já em andamento — não dispara`);
   if (!(await claim(pool, flow, msg.from, KEYWORD_CLAIM_SECONDS))) return console.log(`[ENGINE] id=${ev.id} "${flow.name}" já disparado — ignorado`);
-  await startFlow(ev, flow, contact, msg);
+  await startFlow(ev, flow, contact, msg, pool);
 }
 
 async function processEvent(ev, pool) {
@@ -174,11 +194,22 @@ async function processEvent(ev, pool) {
       }
       ignoreWaiting = true; // botão de um menu antigo → clique novo
     }
+    // Clique em botão/item de fluxo: Railway já envia os próximos blocos de texto
+    let railway = null;
+    const itemId = msg.raw.interactive?.button_reply?.id || msg.raw.interactive?.list_reply?.id || '';
+    if (msg.type === 'interactive' && itemId) {
+      const { rows: botFlows } = await pool.query(
+        `select base44_id, name, nodes from flows where company_id = $1 and connection_id = $2 and status = 'active'`,
+        [contact.company_id, contact.connection_id]
+      );
+      const hit = findClickedItem(botFlows, itemId);
+      if (hit) railway = await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg);
+    }
     const t0 = Date.now();
     const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'buttonClick', contact_phone: msg.from, company_id: contact.company_id, context: { connection_id: contact.connection_id, msg: msg.raw, ignore_waiting: ignoreWaiting } }),
+      body: JSON.stringify({ action: 'buttonClick', contact_phone: msg.from, company_id: contact.company_id, context: { connection_id: contact.connection_id, msg: msg.raw, ignore_waiting: ignoreWaiting, railway } }),
     });
     console.log(`[ENGINE] id=${ev.id} CLIQUE "${msg.text}" status=${res.status} ${(await res.text()).slice(0, 120)} em ${Date.now() - t0}ms`);
     return false;
@@ -186,7 +217,7 @@ async function processEvent(ev, pool) {
 
   const types = msg.type === 'text' ? ['inbound_any', 'keyword'] : ['inbound_any'];
   const { rows: flows } = await pool.query(
-    `select base44_id, name, trigger_type, trigger_config from flows where company_id = $1 and connection_id = $2 and status = 'active' and trigger_type = any($3)`,
+    `select base44_id, name, trigger_type, trigger_config, nodes from flows where company_id = $1 and connection_id = $2 and status = 'active' and trigger_type = any($3)`,
     [contact.company_id, contact.connection_id, types]
   );
   console.log(`[ENGINE] id=${ev.id} candidatos=[${flows.map((f) => `${f.name}(${f.trigger_type})`).join(', ')}]`);
