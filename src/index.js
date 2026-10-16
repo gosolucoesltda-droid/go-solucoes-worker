@@ -21,6 +21,7 @@ const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
 const { startWaitWatcher } = require('./waitWatcher');
 const { handleAi } = require('./aiAgent');
+const { handleManualStart } = require('./manualStart');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -66,6 +67,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/proxy-fetch') {
     return proxyFetchHandler(req, res);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/flow/manual') {
+    return handleManualStart(req, res, pgPool);
   }
 
   if (req.method === 'POST' && url.pathname === '/ai/process') {
