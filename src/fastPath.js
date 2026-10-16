@@ -41,11 +41,12 @@ function buildButtons(node, sub) {
 // Variáveis do contato que o Railway sabe preencher; qualquer outra → Base44 assume
 function contactVars(c = {}) {
   const nome = c.nome || '';
-  return { ...(c.custom_fields || {}), nome, contact_name: nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', contact_phone: c.telefone || '' };
+  const custom = Object.fromEntries(Object.entries(c.custom_fields || {}).map(([k, v]) => [k.toLowerCase(), v]));
+  return { ...custom, nome, contact_name: nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', contact_phone: c.telefone || '' };
 }
 const VAR_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
-const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => m[1] in vars);
-const render = (s, vars) => String(s || '').replace(VAR_RE, (_, k) => String(vars[k] ?? ''));
+const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => m[1].toLowerCase() in vars);
+const render = (s, vars) => String(s || '').replace(VAR_RE, (_, k) => String(vars[k.toLowerCase()] ?? ''));
 
 function isSupported(node, vars) {
   if (!node || node.type !== 'message') return false;
