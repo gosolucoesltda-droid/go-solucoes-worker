@@ -39,15 +39,40 @@ function buildButtons(node, sub) {
 }
 
 // Variáveis do contato que o Railway sabe preencher; qualquer outra → Base44 assume
-function contactVars(c = {}) {
+// Mesma normalização do Base44 (sem acento, minúsculo)
+const nk = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+const prim = (v) => v !== null && v !== undefined && typeof v !== 'object';
+const brNow = () => new Date(Date.now() - 3 * 3600000);
+function saudacao() { const h = brNow().getUTCHours(); return h >= 5 && h < 12 ? 'Bom dia' : h < 18 && h >= 12 ? 'Boa tarde' : 'Boa noite'; }
+// ctx = contexto da execução (variáveis do fluxo, respostas coletadas, última resposta…)
+function contactVars(c = {}, ctx = {}) {
   const nome = c.nome || '';
-  const custom = Object.fromEntries(Object.entries(c.custom_fields || {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const custom = Object.fromEntries(Object.entries(c.custom_fields || {}).filter(([, v]) => prim(v)).map(([k, v]) => [nk(k), v]));
+  const pad = (n) => String(n).padStart(2, '0');
+  const d = brNow();
+  const sys = {
+    saudacao: saudacao(), data_hoje: `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}`, hora_atual: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`,
+    ultima_resposta: ctx.last_reply ?? ctx.ultima_resposta ?? '', last_reply: ctx.last_reply ?? '', resposta: ctx.last_reply ?? '',
+    opcao_selecionada: ctx.list_selected_title ?? ctx.button_selected_title ?? '',
+  };
+  // Variáveis do fluxo (mesma prioridade do Base44: variables → collected → contexto)
+  const flow = {};
+  for (const [i, src] of [ctx.variables || {}, ctx.collected || {}, ctx].entries()) {
+    for (const [k, v] of Object.entries(src)) {
+      if (!prim(v) || (i === 2 && (['nome', 'primeiro_nome'].includes(k.toLowerCase()) || k.startsWith('_')))) continue;
+      if (!(nk(k) in flow)) flow[nk(k)] = v;
+    }
+  }
+  const pref = {};
+  for (const src of [ctx.variables || {}, ctx.collected || {}]) for (const [k, v] of Object.entries(src)) if (prim(v) && !(`var.${nk(k)}` in pref)) pref[`var.${nk(k)}`] = v;
+  for (const src of [ctx.collected || {}, c.custom_fields || {}]) for (const [k, v] of Object.entries(src)) if (prim(v) && !(`custom.${nk(k)}` in pref)) pref[`custom.${nk(k)}`] = v;
   // Campos do contato têm prioridade (ex.: campo "Nome"); contact_name é sempre o nome principal
-  return { nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', ...custom, contact_name: nome, contact_phone: c.telefone || '', contact_id: c.id || '' };
+  return { ...sys, nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', ...custom, ...flow, ...pref, contact_name: nome, contact_phone: c.telefone || '', contact_id: c.id || '' };
 }
-const VAR_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
-const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => m[1].toLowerCase() in vars);
-const render = (s, vars) => String(s || '').replace(VAR_RE, (_, k) => String(vars[k.toLowerCase()] ?? ''));
+const VAR_RE = /\{\{\s*([^}]+?)\s*\}\}/g;
+const fmtDate = (v) => { const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]|$)/); return m ? `${m[3]}/${m[2]}/${m[1]}` : String(v); };
+const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => nk(m[1]) in vars);
+const render = (s, vars) => String(s || '').replace(VAR_RE, (_, k) => fmtDate(vars[nk(k)] ?? ''));
 
 // Atrasos curtos o Railway espera ele mesmo (limite total por execução); longos ficam com o Base44
 const MAX_WAIT_MS = 10000;
@@ -331,9 +356,9 @@ async function runApi(node, vars) {
       for (const k of m.response_path.split('.')) v = v && typeof v === 'object' ? v[k] : undefined;
       if (v === undefined) continue;
       if (/^\d{10,13}$/.test(String(v))) stable = false; // pode virar data no Base44
-      vars[m.field_key.toLowerCase()] = String(v); mapped[m.field_key] = String(v);
+      vars[nk(m.field_key)] = String(v); mapped[m.field_key] = String(v);
     }
-    if (cfg.save_status_to) vars[cfg.save_status_to.toLowerCase()] = String(res.status);
+    if (cfg.save_status_to) vars[nk(cfg.save_status_to)] = String(res.status);
     return { mapped, saved: { ok: res.ok, status: res.status, text }, next: res.ok ? nextOf(node) : nextErr, stable: stable && (res.ok || !!nextErr) };
   } catch (e) {
     return { saved: { error: e.message }, next: nextErr, stable: false };
@@ -354,7 +379,7 @@ function pickRandom(vs) {
 async function runFast(flow, startNodeId, opts, depth = 0) {
   const { companyId, connectionId, phone, contact, loadFlow } = opts;
   const nodes = flow.nodes || [];
-  const vars = contactVars({ telefone: phone, ...(contact || {}) });
+  const vars = contactVars({ telefone: phone, ...(contact || {}) }, opts.context || {});
   opts.vars = vars;
   let node = nodes.find((n) => n.id === startNodeId);
   opts.wait = opts.wait || { left: MAX_WAIT_MS };
