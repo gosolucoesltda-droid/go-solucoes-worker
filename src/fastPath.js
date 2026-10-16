@@ -42,7 +42,8 @@ function buildButtons(node, sub) {
 function contactVars(c = {}) {
   const nome = c.nome || '';
   const custom = Object.fromEntries(Object.entries(c.custom_fields || {}).map(([k, v]) => [k.toLowerCase(), v]));
-  return { ...custom, nome, contact_name: nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', contact_phone: c.telefone || '' };
+  // Campos do contato têm prioridade (ex.: campo "Nome"); contact_name é sempre o nome principal
+  return { nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', ...custom, contact_name: nome, contact_phone: c.telefone || '' };
 }
 const VAR_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
 const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => m[1].toLowerCase() in vars);
