@@ -234,6 +234,36 @@ function conditionNext(node, c) {
   return r ? nextOf(node) : noMatch;
 }
 
+// Ação: o Base44 grava (tags, campos, tarefas, funil); o Railway só passa por ela e segue enviando.
+// false = ação que interrompe o fluxo (fica com o Base44); 'dirty' = efeito que o Railway não prevê
+const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_task', 'add_note', 'create_appointment'];
+function applyActions(node, sim, vars) {
+  const actions = (node.data || node.config || {}).actions || [];
+  let dirty = false;
+  for (const a of actions) {
+    if (!PASS_ACTIONS.includes(a.type)) return false;
+    if (a.type === 'add_tag') for (const t of a.tags || []) { if (!sim.tags.includes(t)) sim.tags.push(t); }
+    if (a.type === 'remove_tag') sim.tags = sim.tags.filter((t) => !(a.tags || []).includes(t));
+    if (a.type === 'set_variable' && a.field_key) {
+      if (a.operation === 'set' && canRender(a.value, vars)) sim.custom_fields[a.field_key] = render(a.value, vars);
+      else if (a.operation === 'clear') sim.custom_fields[a.field_key] = '';
+      else dirty = true;
+    }
+    if (a.type === 'clear_variable') dirty = true;
+  }
+  return dirty ? 'dirty' : true;
+}
+
+// Aleatório (mesma regra do Base44): sorteio por porcentagem
+function pickRandom(vs) {
+  if (!vs.length) return null;
+  const total = vs.reduce((s, v) => s + (v.percentage || 0), 0);
+  if (!total) return vs[Math.floor(Math.random() * vs.length)];
+  let r = Math.random() * total;
+  for (const v of vs) { r -= v.percentage || 0; if (r <= 0) return v; }
+  return vs[vs.length - 1];
+}
+
 // Retorna null quando nada foi enviado (o Base44 faz tudo como antes)
 async function runFast(flow, startNodeId, opts, depth = 0) {
   const { companyId, connectionId, phone, contact, loadFlow } = opts;
@@ -246,8 +276,26 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const messages = [];
   const delays = [];
   // Passa direto pelas condições e atrasos curtos (o Base44 reavalia as condições e pula o que já foi feito)
+  opts.random = opts.random || {};
+  // Cópia do contato com os efeitos das ações já percorridas (para as condições seguintes)
+  const sim = { ...(contact || {}), tags: [...((contact || {}).tags || [])], custom_fields: { ...((contact || {}).custom_fields || {}) } };
+  let dirty = false;
   const skipConditions = async () => {
-    for (let i = 0; (node?.type === 'condition' || node?.type === 'delay') && i < 10; i++) {
+    for (let i = 0; ['condition', 'delay', 'random', 'action'].includes(node?.type) && i < 15; i++) {
+      if (node.type === 'action') {
+        const r = applyActions(node, sim, vars);
+        if (r === false) return false;
+        if (r === 'dirty') dirty = true;
+        node = nodes.find((n) => n.id === nextOf(node));
+        continue;
+      }
+      if (node.type === 'random') {
+        const v = pickRandom((node.data || node.config || {}).variations || []);
+        if (!v?.next_node_id) return false;
+        opts.random[node.id] = v.next_node_id;
+        node = nodes.find((n) => n.id === v.next_node_id);
+        continue;
+      }
       if (node.type === 'delay') {
         const ms = delayNodeMs(node);
         if (ms > opts.wait.left) return false;
@@ -257,11 +305,12 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         node = nodes.find((n) => n.id === nextOf(node));
         continue;
       }
-      const nx = conditionNext(node, contact || {});
+      if (dirty) return false;
+      const nx = conditionNext(node, sim);
       if (nx === undefined) return false;
       node = nodes.find((n) => n.id === nx);
     }
-    return node?.type !== 'condition' && node?.type !== 'delay';
+    return !['condition', 'delay', 'random', 'action'].includes(node?.type);
   };
   if (!(await skipConditions())) return null;
   await prefetchTemplates(node, opts);
@@ -304,7 +353,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
