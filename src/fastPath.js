@@ -38,12 +38,21 @@ function buildButtons(node, sub) {
   }));
 }
 
-function isSupported(node) {
+// Variáveis do contato que o Railway sabe preencher; qualquer outra → Base44 assume
+function contactVars(c = {}) {
+  const nome = c.nome || '';
+  return { ...(c.custom_fields || {}), nome, contact_name: nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', contact_phone: c.telefone || '' };
+}
+const VAR_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
+const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => m[1] in vars);
+const render = (s, vars) => String(s || '').replace(VAR_RE, (_, k) => String(vars[k] ?? ''));
+
+function isSupported(node, vars) {
   if (!node || node.type !== 'message') return false;
   const subs = (node.data || node.config || {}).sub_blocks || [];
   if (!subs.length) return false;
-  return subs.every((s) => s.type === 'text' && !String(s.content || '').includes('{{') &&
-    (s.buttons || []).every((b) => !String(b.url || '').includes('{{')));
+  return subs.every((s) => s.type === 'text' && canRender(s.content, vars) &&
+    (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars)));
 }
 
 function payloadFor(to, text, buttons) {
@@ -59,16 +68,18 @@ function payloadFor(to, text, buttons) {
 }
 
 // Retorna null quando o primeiro nó não é suportado (o Base44 faz tudo como antes)
-async function runFast(flow, startNodeId, { companyId, connectionId, phone }) {
+async function runFast(flow, startNodeId, { companyId, connectionId, phone, contact }) {
   const nodes = flow.nodes || [];
+  const vars = contactVars({ telefone: phone, ...(contact || {}) });
   let node = nodes.find((n) => n.id === startNodeId);
-  if (!isSupported(node)) return null;
+  if (!isSupported(node, vars)) return null;
   const creds = await getCreds(companyId, connectionId);
   const executed = [];
   const messages = [];
   let stop = null;
-  while (node && isSupported(node) && executed.length < 10 && !stop) {
-    for (const sub of (node.data || node.config).sub_blocks) {
+  while (node && isSupported(node, vars) && executed.length < 10 && !stop) {
+    for (const raw of (node.data || node.config).sub_blocks) {
+      const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
       const res = await fetch(`https://graph.facebook.com/v22.0/${creds.phone_number_id}/messages`, {
         method: 'POST',
