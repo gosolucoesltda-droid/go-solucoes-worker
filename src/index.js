@@ -20,6 +20,7 @@ const { Client, Pool } = require('pg');
 const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
 const { startWaitWatcher } = require('./waitWatcher');
+const { handleAi } = require('./aiAgent');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -65,6 +66,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/proxy-fetch') {
     return proxyFetchHandler(req, res);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/ai/process') {
+    return handleAi(req, res, pgPool);
   }
 
   if (url.pathname === '/webhook/whatsapp' && (req.method === 'GET' || req.method === 'POST')) {
