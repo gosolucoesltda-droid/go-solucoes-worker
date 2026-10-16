@@ -6,6 +6,26 @@
 // claim_flow_trigger por execução + horário evita retomada dupla.
 // ═══════════════════════════════════════════════════════════
 const INTERVAL_MS = 10000;
+const { runFast } = require('./fastPath');
+
+// Continua o fluxo depois do atraso enviando direto pela Meta; o Base44 só registra e segue
+async function continueFast(pool, ex, nextId) {
+  try {
+    const { rows: [flow] } = await pool.query(`select base44_id, name, nodes from flows where base44_id = $1 limit 1`, [ex.flow_id]);
+    const { rows: [contact] } = await pool.query(
+      `select id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields from crm_contacts
+       where telefone = $1 and connection_id = $2 limit 1`, [ex.contact_phone, ex.connection_id]);
+    if (!flow || !contact || contact.subscriber_active === false || (contact.automation_paused_until && new Date(contact.automation_paused_until) > new Date())) return null;
+    const loadFlow = async (id) => (await pool.query(
+      `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, ex.connection_id])).rows[0] || null;
+    const fast = await runFast(flow, nextId, { companyId: ex.company_id, connectionId: ex.connection_id, phone: ex.contact_phone, contact, loadFlow });
+    if (fast) console.log(`[WAIT] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) após atraso exec=${ex.id}`);
+    return fast;
+  } catch (e) {
+    console.error(`[WAIT] envio direto falhou (Base44 assume) exec=${ex.id}:`, e.message);
+    return null;
+  }
+}
 
 function startWaitWatcher(pool, callBase44Function) {
   let busy = false;
@@ -26,9 +46,11 @@ function startWaitWatcher(pool, callBase44Function) {
         const { rows: c } = await pool.query(`select claim_flow_trigger($1, $2, $3) as won`, [key, ex.contact_phone, 86400]);
         if (!c[0]?.won) continue;
         if (ex.context?._wait_type === 'ai_agent') { aiDue = true; continue; }
+        const nextId = ex.context?._wait_next_node_id || null;
+        const fast = nextId ? await continueFast(pool, ex, nextId) : null;
         const r = await callBase44Function('workerTrigger', {
           action: 'startFlow', flow_id: ex.flow_id, contact_phone: ex.contact_phone, company_id: ex.company_id,
-          context: { connection_id: ex.connection_id, _delay_resume_execution_id: ex.id, _delay_resume_next_node_id: ex.context?._wait_next_node_id || null },
+          context: { connection_id: ex.connection_id, _delay_resume_execution_id: ex.id, _delay_resume_next_node_id: nextId, ...(fast ? { _railway_fast: fast } : {}) },
           reference_id: key,
         }).catch((e) => ({ ok: false, error: e.message }));
         console.log(`[WAIT] atraso retomado exec=${ex.id} ok=${r?.ok} ${r?.error || ''}`);
