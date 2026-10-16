@@ -217,6 +217,20 @@ function evalFilter(f, c) {
   if (!field && f.field_type === 'custom') field = 'custom_field';
   const { operator: op, value } = f;
   switch (field) {
+    case 'current_time': {
+      // Horário de Brasília (UTC-3), mesma regra do Base44
+      const now = new Date();
+      const nowMins = ((now.getUTCHours() - 3 + 24) % 24) * 60 + now.getUTCMinutes();
+      const toMins = (t) => { const [h, m] = (t || '00:00').split(':').map(Number); return h * 60 + m; };
+      if (op === 'between') return nowMins >= toMins(f.value_from) && nowMins <= toMins(f.value_to);
+      return op === 'before' ? nowMins < toMins(value) : nowMins > toMins(value);
+    }
+    case 'current_weekday': {
+      const DAYS = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 };
+      const today = new Date(Date.now() - 3 * 3600000).getUTCDay();
+      const matches = (Array.isArray(value) ? value : [value]).some((v) => DAYS[v] === today);
+      return op === 'is' ? matches : !matches;
+    }
     case 'tag': { const tags = c.tags || []; return op === 'has_tag' || op === 'is' ? tags.includes(value) : !tags.includes(value); }
     case 'nome': case 'contact_name': return compareText(c.nome, op, value);
     case 'email': case 'contact_email': return compareText(c.email, op, value);
