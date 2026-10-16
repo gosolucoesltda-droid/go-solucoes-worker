@@ -300,7 +300,7 @@ function conditionNext(node, c) {
 
 // Ação: o Base44 grava (tags, campos, tarefas, funil); o Railway só passa por ela e segue enviando.
 // false = ação que interrompe o fluxo (fica com o Base44); 'dirty' = efeito que o Railway não prevê
-const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_task', 'add_note', 'create_appointment'];
+const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_task', 'add_note', 'create_appointment', 'assign_attendant', 'appointment_status'];
 function applyActions(node, sim, vars) {
   const actions = (node.data || node.config || {}).actions || [];
   let dirty = false;
