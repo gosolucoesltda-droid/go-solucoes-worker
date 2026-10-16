@@ -67,7 +67,8 @@ function isSupported(node, vars, waitLeft = MAX_WAIT_MS) {
   if (!subs.length) return false;
   if (subs.reduce((t, s) => t + subWaitMs(s), 0) > waitLeft) return false;
   return subs.every((s) => s.type === 'delay' || s.type === 'typing' ||
-    (s.type === 'image' && s.url && canRender(s.url, vars) && canRender(s.caption, vars)) ||
+    ((s.type === 'image' || s.type === 'video') && s.url && canRender(s.url, vars) && canRender(s.caption, vars)) ||
+    (s.type === 'file' && s.url && canRender(s.url, vars) && canRender(s.filename || s.display_name, vars)) ||
     (s.type === 'audio' && s.url && canRender(s.url, vars)) || (s.type === 'text' && canRender(s.content, vars) &&
     (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars))));
 }
@@ -98,10 +99,16 @@ async function metaPost(creds, path, body, json = true) {
 async function sendMedia(creds, to, sub, vars) {
   const url = render(sub.url, vars);
   const at = () => new Date().toISOString();
-  if (sub.type === 'image') {
+  if (sub.type === 'image' || sub.type === 'video') {
     const caption = render(sub.caption, vars);
-    const data = await metaPost(creds, 'messages', { messaging_product: 'whatsapp', to, type: 'image', image: caption ? { link: url, caption } : { link: url } });
-    return { tipo: 'image', body: caption || 'Imagem', media_url: url, buttons: [], wa_id: data.messages?.[0]?.id || null, at: at() };
+    const t = sub.type;
+    const data = await metaPost(creds, 'messages', { messaging_product: 'whatsapp', to, type: t, [t]: caption ? { link: url, caption } : { link: url } });
+    return { tipo: t, body: caption || (t === 'image' ? 'Imagem' : 'Video'), media_url: url, buttons: [], wa_id: data.messages?.[0]?.id || null, at: at() };
+  }
+  if (sub.type === 'file') {
+    const filename = render(sub.filename || sub.display_name, vars);
+    const data = await metaPost(creds, 'messages', { messaging_product: 'whatsapp', to, type: 'document', document: filename ? { link: url, filename } : { link: url } });
+    return { tipo: 'document', body: 'Arquivo', media_url: url, file_name: filename || null, buttons: [], wa_id: data.messages?.[0]?.id || null, at: at() };
   }
   const file = await fetch(url);
   if (!file.ok) throw new Error(`áudio HTTP ${file.status}`);
@@ -231,7 +238,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     for (const raw of (node.data || node.config).sub_blocks) {
       const wait = subWaitMs(raw);
       if (wait) { opts.wait.left -= wait; await sleep(wait); continue; }
-      if (raw.type === 'image' || raw.type === 'audio') { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
+      if (['image', 'audio', 'video', 'file'].includes(raw.type)) { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
       const res = await fetch(`https://graph.facebook.com/v22.0/${creds.phone_number_id}/messages`, {
