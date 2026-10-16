@@ -61,12 +61,53 @@ function delayNodeMs(node) {
   return (Number(d.duration) || 1) * (UNIT_MS[d.unit] || 3600000);
 }
 
+// Templates: definição aprovada lida da Meta (cache 10 min). Com botões de resposta → fica com o Base44 (ele pausa o fluxo)
+const tplCache = new Map();
+const tplParams = (s) => { const m = s.variables_mapping || s.variables || {}; return Object.keys(m).sort((a, b) => parseInt(a) - parseInt(b)).map((k) => m[k] || ''); };
+async function loadTemplate(creds, name, lang) {
+  const key = `${creds.waba_id}:${name}:${lang}`;
+  const hit = tplCache.get(key);
+  if (hit && hit.exp > Date.now()) return hit.tpl;
+  const res = await fetch(`https://graph.facebook.com/v22.0/${creds.waba_id}/message_templates?name=${encodeURIComponent(name)}&limit=50`, { headers: { Authorization: `Bearer ${creds.access_token}` } });
+  const data = await res.json();
+  const tpl = (data.data || []).find((t) => t.name === name && t.language === lang && t.status === 'APPROVED') || null;
+  tplCache.set(key, { tpl, exp: Date.now() + CREDS_TTL_MS });
+  return tpl;
+}
+async function prefetchTemplates(node, opts) {
+  const subs = node?.type === 'message' ? ((node.data || node.config || {}).sub_blocks || []).filter((s) => s.type === 'template') : [];
+  if (!subs.length) return;
+  const creds = await getCreds(opts.companyId, opts.connectionId).catch(() => null);
+  if (!creds?.waba_id) return;
+  opts.vars.__waba = creds.waba_id;
+  for (const s of subs) await loadTemplate(creds, s.template_name, s.template_language || 'pt_BR').catch(() => null);
+}
+function templateOk(s, vars) {
+  const hit = tplCache.get(`${vars.__waba}:${s.template_name}:${s.template_language || 'pt_BR'}`);
+  const tpl = hit && hit.exp > Date.now() ? hit.tpl : null;
+  if (!tpl) return false;
+  const btns = tpl.components?.find((c) => c.type === 'BUTTONS')?.buttons || [];
+  return !btns.some((b) => b.type === 'QUICK_REPLY') && tplParams(s).every((p) => canRender(p, vars)) && canRender(s.header_image_url, vars);
+}
+async function sendTemplate(creds, to, s, vars) {
+  const lang = s.template_language || 'pt_BR';
+  const tpl = await loadTemplate(creds, s.template_name, lang);
+  const params = tplParams(s).map((p) => render(p, vars));
+  const components = [];
+  if (s.header_image_url) components.push({ type: 'header', parameters: [{ type: 'image', image: { link: render(s.header_image_url, vars) } }] });
+  if (params.length) components.push({ type: 'body', parameters: params.map((text) => ({ type: 'text', text })) });
+  const template = { name: s.template_name, language: { code: lang }, ...(components.length ? { components } : {}) };
+  const data = await metaPost(creds, 'messages', { messaging_product: 'whatsapp', to, type: 'template', template });
+  return { tipo: 'template', body: `[Template: ${s.template_name}]`, template_buttons: tpl?.components?.find((c) => c.type === 'BUTTONS')?.buttons || [], buttons: [], wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() };
+}
+
 function isSupported(node, vars, waitLeft = MAX_WAIT_MS) {
   if (!node || node.type !== 'message') return false;
   const subs = (node.data || node.config || {}).sub_blocks || [];
   if (!subs.length) return false;
+  if (subs.some((s) => s.type === 'template' && !templateOk(s, vars))) return false;
   if (subs.reduce((t, s) => t + subWaitMs(s), 0) > waitLeft) return false;
-  return subs.every((s) => s.type === 'delay' || s.type === 'typing' ||
+  return subs.every((s) => s.type === 'delay' || s.type === 'typing' || s.type === 'template' ||
     ((s.type === 'image' || s.type === 'video') && s.url && canRender(s.url, vars) && canRender(s.caption, vars)) ||
     (s.type === 'file' && s.url && canRender(s.url, vars) && canRender(s.filename || s.display_name, vars)) ||
     (s.type === 'audio' && s.url && canRender(s.url, vars)) || (s.type === 'text' && canRender(s.content, vars) &&
@@ -198,6 +239,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const { companyId, connectionId, phone, contact, loadFlow } = opts;
   const nodes = flow.nodes || [];
   const vars = contactVars({ telefone: phone, ...(contact || {}) });
+  opts.vars = vars;
   let node = nodes.find((n) => n.id === startNodeId);
   opts.wait = opts.wait || { left: MAX_WAIT_MS };
   const executed = [];
@@ -222,6 +264,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     return node?.type !== 'condition' && node?.type !== 'delay';
   };
   if (!(await skipConditions())) return null;
+  await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
   const target = jumpTarget(node);
   if (target && loadFlow && depth < 3) {
@@ -238,6 +281,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     for (const raw of (node.data || node.config).sub_blocks) {
       const wait = subWaitMs(raw);
       if (wait) { opts.wait.left -= wait; await sleep(wait); continue; }
+      if (raw.type === 'template') { messages.push(await sendTemplate(creds, phone, raw, vars)); continue; }
       if (['image', 'audio', 'video', 'file'].includes(raw.type)) { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
@@ -252,7 +296,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       if (buttons.some((b) => b.type !== 'url')) { stop = node.id; break; }
     }
     executed.push(node.id);
-    if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); }
+    if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
   const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
