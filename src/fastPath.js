@@ -5,7 +5,8 @@
 // (igual ao Base44). Devolve o que enviou para o Base44 só registrar e
 // continuar o restante do fluxo.
 // ═══════════════════════════════════════════════════════════
-const { needsFacts, loadFacts, evalFact } = require('./crmFacts');
+const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts');
+const { loadCreds } = require('./botSettings');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const CREDS_TTL_MS = 10 * 60 * 1000;
@@ -17,12 +18,12 @@ const nextOf = (n) => n.next_node_id ?? n.data?.next_node_id ?? n.config?.next_n
 async function getCreds(companyId, connectionId) {
   const hit = credsCache.get(connectionId);
   if (hit && hit.exp > Date.now()) return hit.creds;
-  const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
+  // Supabase primeiro; o Base44 só responde se a conexão ainda não foi copiada
+  const data = await loadCreds(companyId, connectionId) || await (await fetch(`${APP_URL}/functions/workerTrigger`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'getSendCreds', company_id: companyId, context: { connection_id: connectionId } }),
-  });
-  const data = await res.json();
+  })).json();
   if (!data.ok) throw new Error(data.error || 'sem credenciais');
   credsCache.set(connectionId, { creds: data, exp: Date.now() + CREDS_TTL_MS });
   return data;
@@ -308,8 +309,8 @@ function applyActions(node, sim, vars) {
   let dirty = false;
   for (const a of actions) {
     if (!PASS_ACTIONS.includes(a.type)) return false;
-    // Ação que muda funil/tarefas/agendamentos: as condições seguintes sobre eles ficam com o Base44
-    if (['move_funnel', 'create_task', 'create_appointment', 'appointment_status'].includes(a.type) && sim._facts) sim._facts.stale = true;
+    // Ação que muda funil/tarefas: aplica nos dados lidos (agendamentos: as condições seguintes ficam com o Base44)
+    applyFactAction(sim._facts, a);
     if (a.type === 'add_tag') for (const t of a.tags || []) { if (!sim.tags.includes(t)) sim.tags.push(t); }
     if (a.type === 'remove_tag') sim.tags = sim.tags.filter((t) => !(a.tags || []).includes(t));
     if (a.type === 'set_variable' && a.field_key) {

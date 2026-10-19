@@ -6,6 +6,7 @@
 const { buildSystemPrompt, matchByLabel } = require('./aiPrompt');
 const { getCreds, metaPost, payloadFor, runFast } = require('./fastPath');
 const { recordFast } = require('./supabaseRecorder');
+const { loadAiBundle } = require('./botSettings');
 
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
@@ -15,11 +16,11 @@ const bundles = new Map();
 async function getBundle(companyId) {
   const hit = bundles.get(companyId);
   if (hit && hit.exp > Date.now()) return hit.data;
-  const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
+  // Supabase primeiro; o Base44 só responde se a configuração ainda não foi copiada
+  const data = await loadAiBundle(companyId) || await (await fetch(`${APP_URL}/functions/workerTrigger`, {
     method: 'POST', headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'getAiBundle', company_id: companyId }),
-  });
-  const data = await res.json();
+  })).json();
   if (!data.ok) throw new Error(data.error || 'sem agente');
   bundles.set(companyId, { data, exp: Date.now() + BUNDLE_TTL_MS });
   return data;

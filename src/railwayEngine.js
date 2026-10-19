@@ -9,6 +9,7 @@
 // ═══════════════════════════════════════════════════════════
 const { runFast, firstNodeId, findClickedItem } = require('./fastPath');
 const { recordFast } = require('./supabaseRecorder');
+const { loadFacts, passesStageFilter } = require('./crmFacts');
 const PILOT_IDS = (process.env.RAILWAY_ENGINE_PHONE_IDS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
@@ -47,7 +48,7 @@ function keywordMatches(cfg = {}, text) {
 }
 
 // true/false = passou ou não; null = filtro que o Railway não sabe avaliar (fica com o Base44)
-function passesContactFilters(filters, contact) {
+function passesContactFilters(filters, contact, facts) {
   if (!filters?.length) return true;
   for (const f of filters) {
     const op = f.operator || 'equals';
@@ -68,6 +69,10 @@ function passesContactFilters(filters, contact) {
       if (op === 'not_equals' && val === want) return false;
       if (op === 'contains' && !val.includes(want)) return false;
       if (op === 'not_contains' && val.includes(want)) return false;
+    } else if (f.type === 'stage') {
+      const ok = passesStageFilter(f, facts);
+      if (ok === null) return null;
+      if (!ok) return false;
     } else if (f.type) {
       return null;
     }
@@ -119,7 +124,8 @@ async function startFlow(ev, flow, contact, msg, pool) {
       flow_id: flow.base44_id,
       contact_phone: msg.from,
       company_id: contact.company_id,
-      context: { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine', ...(fast || {}) },
+      // Filtros do gatilho já avaliados aqui (o Base44 não reavalia com outra regra e perde o que já foi enviado)
+      context: { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine', _skip_filters: true, ...(fast || {}) },
     }),
   })
     .then((res) => console.log(`[ENGINE] id=${ev.id} DISPAROU "${flow.name}" (${flow.trigger_type}) status=${res.status} em ${Date.now() - t0}ms`))
@@ -256,9 +262,12 @@ async function processEvent(ev, pool) {
   );
   console.log(`[ENGINE] id=${ev.id} candidatos=[${flows.map((f) => `${f.name}(${f.trigger_type})`).join(', ')}]`);
 
+  // Filtro de etapa do funil: lê os negócios do contato uma vez
+  const needStage = flows.some((f) => (f.trigger_config?.contact_filters || []).some((x) => x.type === 'stage'));
+  const facts = needStage ? await loadFacts(contact.company_id, msg.from) : null;
   for (const flow of flows) {
-    const passes = passesContactFilters(flow.trigger_config?.contact_filters, contact);
-    if (passes === null) { console.log(`[ENGINE] id=${ev.id} "${flow.name}" tem filtro de etapa — fica com o Base44`); continue; }
+    const passes = passesContactFilters(flow.trigger_config?.contact_filters, contact, facts);
+    if (passes === null) { console.log(`[ENGINE] id=${ev.id} "${flow.name}" tem filtro que o Railway não avalia — fica com o Base44`); continue; }
     if (!passes) continue;
     const run = flow.trigger_type === 'keyword' ? startKeyword : startInboundAny;
     await run(ev, pool, flow, contact, msg).catch((e) => console.error(`[ENGINE] id=${ev.id} erro em "${flow.name}":`, e.message));

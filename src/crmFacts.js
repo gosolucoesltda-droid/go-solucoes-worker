@@ -63,4 +63,37 @@ function evalFact(field, filter, f) {
   }
 }
 
-module.exports = { setFactsPool, needsFacts, loadFacts, evalFact };
+// Efeito de uma ação do fluxo nos dados lidos (mesma regra do bloco de ação do Base44),
+// para as condições seguintes continuarem no Railway. Agendamentos: o Base44 avalia.
+function applyFactAction(f, a) {
+  if (!f) return;
+  if (a.type === 'move_funnel') {
+    const deals = f.open_deals || (f.open_deals = []);
+    if (deals.length) deals[0].stage_id = a.stage_id;
+    else if (a.create_if_missing) deals.unshift({ stage_id: a.stage_id, value: Number(a.value) || 0 });
+  } else if (a.type === 'create_task') {
+    let due = a.due_date || null;
+    if (a.due_date_type === 'relative' || (!a.due_date_type && a.due_date_days != null)) {
+      due = new Date(Date.now() + Number(a.due_date_days ?? 1) * 86400000).toISOString().slice(0, 10);
+    }
+    f.has_open_task = true;
+    if (due && String(due).slice(0, 10) < new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10)) f.has_overdue_task = true;
+  } else if (a.type === 'create_appointment' || a.type === 'appointment_status') {
+    f.stale = true;
+  }
+}
+
+// Filtro de etapa do gatilho (mesma regra do Base44): null = sem dados (o Base44 avalia)
+function passesStageFilter(f, facts) {
+  if (!facts) return null;
+  const deals = facts.open_deals || [];
+  const inStage = deals.some((d) => d.stage_id === f.value);
+  const op = f.operator || 'equals';
+  if (op === 'equals') return inStage;
+  if (op === 'not_equals') return !inStage;
+  if (op === 'is_empty') return deals.length === 0;
+  if (op === 'is_not_empty') return deals.length > 0;
+  return true;
+}
+
+module.exports = { setFactsPool, needsFacts, loadFacts, evalFact, applyFactAction, passesStageFilter };

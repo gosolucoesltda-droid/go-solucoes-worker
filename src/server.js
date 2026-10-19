@@ -24,6 +24,7 @@ const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
 const { handleCampaign } = require('./campaign');
 const { setFactsPool } = require('./crmFacts');
+const { setBotSettingsPool } = require('./botSettings');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -246,6 +247,7 @@ async function connectPostgres() {
   });
   console.log('[PG-POOL] pool criado (max=10 conexões)');
   setFactsPool(pgPool);
+  setBotSettingsPool(pgPool);
 
   // ── Cliente dedicado para LISTEN/NOTIFY ──
   // LISTEN precisa de uma conexão persistente exclusiva — não pode usar o Pool.

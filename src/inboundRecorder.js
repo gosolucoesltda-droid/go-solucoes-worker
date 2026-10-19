@@ -1,12 +1,9 @@
 // ═══════════════════════════════════════════════════════════
-// Fase 2 — O Railway grava a mensagem recebida direto no Supabase assim que
-// ela chega e já manda a cópia para o painel (o chat atualiza na hora, antes
-// do fluxo/IA rodar). O Base44 continua cuidando do resto (fluxos, mídia,
-// transcrição), mas não grava a mensagem de novo.
+// O Railway grava a mensagem recebida direto no Supabase assim que ela chega
+// (o chat atualiza na hora, antes do fluxo/IA rodar). O Base44 continua cuidando
+// do resto (fluxos, mídia, transcrição) e só troca a linha provisória pela definitiva.
 // Contato novo, reação e cartão de contato ficam com o Base44 como antes.
 // ═══════════════════════════════════════════════════════════
-const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
-const WORKER_SECRET = process.env.WORKER_SECRET;
 
 // Mesmo formato que o Base44 grava (corpo + campos de mídia)
 function inboundFields(msg) {
@@ -57,19 +54,9 @@ async function recordInbound(pool, ev) {
        nao_lidas = nao_lidas + 1, bsuid = coalesce(bsuid, nullif($5, '')), updated_at = now() where id = $1`,
     [contact.id, nome, fields.body, at, bsuid]
   );
-
-  // Cópia para o painel (o chat do Base44 recebe em tempo real)
-  const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      action: 'recordInbound', company_id: contact.company_id, contact_phone: msg.from,
-      context: { connection_id: contact.connection_id, contact_id: contact.id, nome, bsuid, message: { whatsapp_message_id: msg.id, timestamp: at, ...fields } },
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  console.log(`[INBOUND] id=${ev.id} gravada no Supabase, cópia no painel ok=${!!data.ok} em ${Date.now() - t0}ms ${data.error || ''}`);
-  return data.ok ? data : null;
+  // O Supabase é o banco do painel: o chat recebe em tempo real direto daqui (sem cópia no Base44)
+  console.log(`[INBOUND] id=${ev.id} gravada no Supabase em ${Date.now() - t0}ms`);
+  return { ok: true };
 }
 
 module.exports = { recordInbound };
