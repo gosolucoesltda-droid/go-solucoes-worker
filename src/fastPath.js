@@ -5,6 +5,7 @@
 // (igual ao Base44). Devolve o que enviou para o Base44 só registrar e
 // continuar o restante do fluxo.
 // ═══════════════════════════════════════════════════════════
+const { needsFacts, loadFacts, evalFact } = require('./crmFacts');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const CREDS_TTL_MS = 10 * 60 * 1000;
@@ -273,7 +274,7 @@ function evalFilter(f, c) {
       }
       return compareText(v, op, value);
     }
-    default: return undefined;
+    default: return evalFact(field, f, c._facts);
   }
 }
 function evalAll(filters, combine, c) {
@@ -306,6 +307,8 @@ function applyActions(node, sim, vars) {
   let dirty = false;
   for (const a of actions) {
     if (!PASS_ACTIONS.includes(a.type)) return false;
+    // Ação que muda funil/tarefas/agendamentos: as condições seguintes sobre eles ficam com o Base44
+    if (['move_funnel', 'create_task', 'create_appointment', 'appointment_status'].includes(a.type) && sim._facts) sim._facts.stale = true;
     if (a.type === 'add_tag') for (const t of a.tags || []) { if (!sim.tags.includes(t)) sim.tags.push(t); }
     if (a.type === 'remove_tag') sim.tags = sim.tags.filter((t) => !(a.tags || []).includes(t));
     if (a.type === 'set_variable' && a.field_key) {
@@ -390,6 +393,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   opts.random = opts.random || {};
   // Cópia do contato com os efeitos das ações já percorridas (para as condições seguintes)
   const sim = { ...(contact || {}), tags: [...((contact || {}).tags || [])], custom_fields: { ...((contact || {}).custom_fields || {}) } };
+  // Funil, tarefas e agendamentos: só lê quando o fluxo tem condição sobre eles
+  if (!opts.facts && needsFacts(nodes)) opts.facts = await loadFacts(companyId, phone);
+  sim._facts = opts.facts || null;
   let dirty = false;
   const skipConditions = async () => {
     for (let i = 0; ['condition', 'delay', 'random', 'action', 'api_request'].includes(node?.type) && i < 15; i++) {
