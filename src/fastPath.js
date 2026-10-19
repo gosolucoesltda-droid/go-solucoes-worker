@@ -301,7 +301,7 @@ function conditionNext(node, c) {
 
 // Ação: o Base44 grava (tags, campos, tarefas, funil); o Railway só passa por ela e segue enviando.
 // false = ação que interrompe o fluxo (fica com o Base44); 'dirty' = efeito que o Railway não prevê
-const PASS_TYPES = ['condition', 'delay', 'random', 'action', 'api_request', 'elevenlabs_audio'];
+const PASS_TYPES = ['condition', 'delay', 'random', 'action', 'api_request', 'elevenlabs_audio', 'google_sheets'];
 const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_task', 'add_note', 'create_appointment', 'assign_attendant', 'appointment_status'];
 function applyActions(node, sim, vars) {
   const actions = (node.data || node.config || {}).actions || [];
@@ -397,6 +397,60 @@ async function runVoice(node, vars, opts, flowId) {
   }
 }
 
+// Google Planilhas: o Base44 faz a operação (as chaves do Google ficam com ele) e o Railway segue
+// com o resultado. null = fica com o Base44
+async function runSheets(node, vars, opts, flow) {
+  const cfg = { ...(node.config || {}), ...(node.data || {}) };
+  if (!opts.fresh || !cfg.integration_id || !cfg.spreadsheet_id || !cfg.sheet_name) return null;
+  const cols = (list) => (list || []).filter((c) => c.key);
+  const parts = [...cols(cfg.columns), ...cols(cfg.update_columns), ...(cfg.contact_mappings || [])].map((c) => c.value)
+    .concat([cfg.search_column, cfg.search_value]);
+  if (!parts.every((p) => canRender(p, vars))) return null;
+  const map = (list) => Object.fromEntries(cols(list).map((c) => [c.key, render(c.value, vars)]));
+  try {
+    const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'googleSheets', company_id: opts.companyId, context: {
+        integration_id: cfg.integration_id, spreadsheet_id: cfg.spreadsheet_id, spreadsheet_name: cfg.spreadsheet_name || '',
+        sheet_name: cfg.sheet_name, operation: cfg.operation || 'insert', mappings: map(cfg.columns), columns_to_update: map(cfg.update_columns),
+        search_column: render(cfg.search_column, vars), search_value: render(cfg.search_value, vars),
+        variable_mappings: (cfg.read_mappings || []).filter((m) => m.column && m.var_name).map((m) => ({ spreadsheet_column: m.column, crm_field: m.var_name })),
+        on_not_found: cfg.create_if_not_found ? 'create' : undefined,
+        flow_id: flow.base44_id, flow_name: flow.name, flow_block_id: node.id, contact_phone: opts.phone,
+      } }),
+      signal: AbortSignal.timeout(60000),
+    });
+    const data = await res.json();
+    return typeof data?.ok === 'boolean' ? data : null;
+  } catch (e) {
+    console.error('[FAST] planilha falhou (Base44 assume):', e.message);
+    return null;
+  }
+}
+// Mesmo efeito que o Base44 aplica depois da planilha (para as mensagens seguintes)
+function applySheets(node, r, vars, sim) {
+  const cfg = { ...(node.config || {}), ...(node.data || {}) };
+  const set = (k, v) => {
+    vars[nk(k)] = v;
+    if (['nome', 'email', 'empresa', 'telefone'].includes(k)) sim[k] = v; else sim.custom_fields[k] = v;
+    if (k === 'nome') { vars.contact_name = v; vars.primeiro_nome = String(v).split(' ')[0]; }
+  };
+  if (cfg.operation === 'insert' || cfg.operation === 'update') {
+    for (const m of cfg.contact_mappings || []) if (m.field) set(m.field, render(m.value, vars));
+  }
+  if (cfg.operation === 'read') {
+    const found = (r.rows_affected || 0) > 0;
+    if (cfg.save_results_to) vars[nk(cfg.save_results_to)] = found ? 'found' : 'not_found';
+    const row = r.data?.data || r.data || {};
+    for (const m of cfg.read_mappings || []) {
+      if (!m.var_name) continue;
+      const v = row[m.column] ?? '';
+      if (found) set(m.var_name, v); else vars[nk(m.var_name)] = v;
+    }
+  }
+}
+
 // Aleatório (mesma regra do Base44): sorteio por porcentagem
 function pickRandom(vs) {
   if (!vs.length) return null;
@@ -433,6 +487,18 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         if (!url) return false;
         vars[nk('audio_response')] = url; opts.audio = url;
         executed.push(node.id);
+        node = nodes.find((n) => n.id === nextOf(node));
+        continue;
+      }
+      if (node.type === 'google_sheets') {
+        const r = depth === 0 ? await runSheets(node, vars, opts, flow) : null;
+        if (!r) return false;
+        opts.sheets[node.id] = r;
+        // Falha na planilha: o Base44 segue daqui com o resultado salvo
+        if (!r.ok) { node = null; return true; }
+        applySheets(node, r, vars, sim);
+        // Leitura muda campos que as condições seguintes usam: elas ficam com o Base44
+        if ((node.data || node.config || {}).operation === 'read') dirty = true;
         node = nodes.find((n) => n.id === nextOf(node));
         continue;
       }
@@ -478,11 +544,12 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     return !PASS_TYPES.includes(node?.type);
   };
   opts.api = opts.api || {};
+  opts.sheets = opts.sheets || {};
   opts.actionAt = opts.actionAt || {};
   // Áudio gerado: o Base44 recebe o link em {{audio_response}}
   const voiceVars = () => opts.audio ? { variables: { ...((opts.context || {}).variables || {}), audio_response: opts.audio } } : {};
-  const partial = () => (executed.length || Object.keys(opts.api).length)
-    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt, ...voiceVars() } : null;
+  const partial = () => (executed.length || Object.keys(opts.api).length || Object.keys(opts.sheets).length)
+    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, ...voiceVars() } : null;
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
@@ -532,7 +599,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
