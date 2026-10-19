@@ -40,4 +40,6 @@ async function loadAiBundle(companyId) {
   }
 }
 
-module.exports = { setBotSettingsPool, loadCreds, loadAiBundle };
+const settingsPool = () => pool;
+
+module.exports = { setBotSettingsPool, settingsPool, loadCreds, loadAiBundle };

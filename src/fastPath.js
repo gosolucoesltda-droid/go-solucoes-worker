@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════
 const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts');
 const { loadCreds } = require('./botSettings');
+const { generateVoice } = require('./voiceAudio');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const CREDS_TTL_MS = 10 * 60 * 1000;
@@ -370,14 +371,17 @@ async function runApi(node, vars) {
   }
 }
 
-// Voz do ElevenLabs (bloco fora do agente): o Base44 gera, guarda o áudio e registra o uso;
-// o Railway recebe o link em {{audio_response}} e segue enviando. null = fica com o Base44
+// Voz do ElevenLabs (bloco fora do agente): o Railway gera, guarda o áudio e registra o uso
+// (reserva: o Base44); o link vai em {{audio_response}} e segue enviando. null = fica com o Base44
 async function runVoice(node, vars, opts, flowId) {
   const cfg = node.data || node.config || {};
   if (!opts.fresh || !opts.windowOpen || !canRender(cfg.text || '', vars)) return null;
   const text = render(cfg.text || '', vars);
   if (!text.trim() || text.length > 5000) return null;
   const custom = cfg.use_default_settings === false;
+  // Railway gera sozinho (chave no Supabase); o Base44 só entra se faltar configuração ou falhar
+  const own = await generateVoice({ companyId: opts.companyId, text, cfg, flowId, nodeId: node.id, contactId: opts.contact?.id, phone: opts.phone });
+  if (own) return own;
   try {
     const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
       method: 'POST',

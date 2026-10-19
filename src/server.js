@@ -25,6 +25,7 @@ const { handleManualStart } = require('./manualStart');
 const { handleCampaign } = require('./campaign');
 const { setFactsPool } = require('./crmFacts');
 const { setBotSettingsPool } = require('./botSettings');
+const { serveAudio } = require('./voiceAudio');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -62,6 +63,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/health') {
     return healthHandler(req, res);
+  }
+
+  if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
+    return serveAudio(res, pgPool, url.pathname.slice(7)).catch((e) => {
+      console.error('[AUDIO] erro:', e.message);
+      if (!res.headersSent) { res.writeHead(500); res.end('Error'); }
+    });
   }
 
   if (req.method === 'POST' && url.pathname === '/trigger') {
@@ -105,6 +113,7 @@ function healthHandler(req, res) {
     pg_pool_total: pgPool?.totalCount || 0,
     pg_pool_idle: pgPool?.idleCount || 0,
     is_processing: isProcessing,
+    voice_ready: !!process.env.RAILWAY_PUBLIC_DOMAIN,
     stats,
     uptime: process.uptime(),
   }));
