@@ -1,6 +1,7 @@
 // Botão "Iniciar fluxo" do painel: Railway envia os primeiros blocos direto pela Meta
 // e devolve o que enviou; o Base44 só registra e continua o restante.
 const { runFast, firstNodeId } = require('./fastPath');
+const { recordFast } = require('./supabaseRecorder');
 const WORKER_SECRET = process.env.WORKER_SECRET;
 
 async function handleManualStart(req, res, pool) {
@@ -20,6 +21,7 @@ async function handleManualStart(req, res, pool) {
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, connection_id])).rows[0] || null;
     const fast = await runFast(flow, firstNodeId(flow), { companyId: company_id, connectionId: connection_id, phone: contact_phone, contact, loadFlow });
     if (fast) console.log(`[MANUAL] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) de "${flow.name}"`);
+    await recordFast(pool, { companyId: company_id, connectionId: connection_id, contactId: contact.id, phone: contact_phone, flow, fast, startNodeId: firstNodeId(flow) });
     reply(200, { fast });
   } catch (e) {
     console.error('[MANUAL] falhou (Base44 assume):', e.message);

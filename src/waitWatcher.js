@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════
 const INTERVAL_MS = 10000;
 const { runFast } = require('./fastPath');
+const { recordFast } = require('./supabaseRecorder');
 
 // Continua o fluxo depois do atraso enviando direto pela Meta; o Base44 só registra e segue
 async function continueFast(pool, ex, nextId) {
@@ -20,6 +21,7 @@ async function continueFast(pool, ex, nextId) {
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, ex.connection_id])).rows[0] || null;
     const fast = await runFast(flow, nextId, { companyId: ex.company_id, connectionId: ex.connection_id, phone: ex.contact_phone, contact, loadFlow, context: ex.context || {} });
     if (fast) console.log(`[WAIT] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) após atraso exec=${ex.id}`);
+    await recordFast(pool, { companyId: ex.company_id, connectionId: ex.connection_id, contactId: contact.id, phone: ex.contact_phone, fast, executionId: ex.id, startNodeId: nextId });
     return fast;
   } catch (e) {
     console.error(`[WAIT] envio direto falhou (Base44 assume) exec=${ex.id}:`, e.message);

@@ -8,6 +8,7 @@
 // de botões, mídia e demais gatilhos.
 // ═══════════════════════════════════════════════════════════
 const { runFast, firstNodeId, findClickedItem } = require('./fastPath');
+const { recordFast } = require('./supabaseRecorder');
 const PILOT_IDS = (process.env.RAILWAY_ENGINE_PHONE_IDS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
@@ -97,6 +98,8 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false,
     let total = 0;
     for (let r = fast; r; r = r._railway_jump) total += (r._railway_messages || []).length;
     if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${total} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
+    // Fase 2: grava no Supabase antes de avisar o Base44 (clique: só as mensagens, a execução já existe)
+    await recordFast(pool, { companyId: contact.company_id, connectionId: contact.connection_id, contactId: contact.id, phone: msg.from, flow: force ? null : flow, fast, startNodeId });
     return fast;
   } catch (e) {
     console.error(`[ENGINE] id=${ev.id} envio direto falhou (Base44 assume):`, e.message);

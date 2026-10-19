@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
 const engine = require('./railwayEngine');
+const { recordInbound } = require('./inboundRecorder');
 
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
@@ -27,6 +28,8 @@ function phoneNumberIdOf(raw) {
 
 async function forward(getPool, ev) {
   const pool = getPool();
+  // Fase 2: grava a mensagem no Supabase + cópia no painel em paralelo com o motor
+  const recorded = recordInbound(pool, ev).catch((e) => { console.error(`[INBOUND] gravação falhou id=${ev.id} (Base44 grava):`, e.message); return null; });
   try {
     if (engine.isPilot(ev.phone_number_id)) {
       const handled = await engine.processEvent(ev, pool).catch((e) => {
@@ -38,6 +41,7 @@ async function forward(getPool, ev) {
         return;
       }
     }
+    await recorded; // o Base44 só processa depois que a cópia existe (evita mensagem duplicada)
     const res = await fetch(`${APP_URL}/functions/whatsappWebhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': ev.signature },
