@@ -572,7 +572,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     const dest = await loadFlow(target);
     const sub = dest && await runFast(dest, firstNodeId(dest), Object.assign(opts, { contact: sim }), depth + 1);
     // Mantém o que já passou antes do salto (atrasos, áudio, API) para o Base44 não repetir
-    const base = partial() || { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null };
+    // Ações percorridas antes do salto não entram em "executed": o horário delas vai junto
+    // para o Base44 registrar o aviso na posição certa da conversa (antes das mensagens do destino)
+    const base = { ...(partial() || { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null }), _railway_action_at: opts.actionAt };
     return sub ? { ...base, _railway_jump: { flow_id: target, ...sub } } : partial();
   }
   if (!isSupported(node, vars, opts.wait.left)) {
