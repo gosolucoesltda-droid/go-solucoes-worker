@@ -22,6 +22,8 @@ const { runFast, firstNodeId } = require('./fastPath');
 const { startWaitWatcher } = require('./waitWatcher');
 const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
+const { handleCampaign } = require('./campaign');
+const { setFactsPool } = require('./crmFacts');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -71,6 +73,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/flow/manual') {
     return handleManualStart(req, res, pgPool);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/campaign/send') {
+    return handleCampaign(req, res, () => pgPool);
   }
 
   if (req.method === 'POST' && url.pathname === '/ai/process') {
@@ -239,6 +245,7 @@ async function connectPostgres() {
     connectionTimeoutMillis: 5000,
   });
   console.log('[PG-POOL] pool criado (max=10 conexões)');
+  setFactsPool(pgPool);
 
   // ── Cliente dedicado para LISTEN/NOTIFY ──
   // LISTEN precisa de uma conexão persistente exclusiva — não pode usar o Pool.
@@ -457,7 +464,7 @@ async function fastJob(job, flowId, connectionId) {
       `select base44_id, name, nodes, trigger_config from flows where base44_id = $1 and status = 'active' limit 1`, [flowId]);
     if (!flow || flow.trigger_config?.contact_filters?.length) return null; // filtros ficam com o Base44
     const { rows: [contact] } = await pgPool.query(
-      `select id, company_id, connection_id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields from crm_contacts
+      `select id, company_id, connection_id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields, ultima_inbound_em, ad_window_expires_at from crm_contacts
        where telefone = $1 and connection_id = $2 limit 1`, [job.contact_phone, connectionId]);
     if (!contact || contact.subscriber_active === false || (contact.automation_paused_until && new Date(contact.automation_paused_until) > new Date())) return null;
     const { rows: active } = await pgPool.query(
@@ -466,7 +473,12 @@ async function fastJob(job, flowId, connectionId) {
     const loadFlow = async (id) => (await pgPool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, connectionId])).rows[0] || null;
     const t = Date.now();
-    const fast = await runFast(flow, firstNodeId(flow), { companyId: job.company_id, connectionId, phone: job.contact_phone, contact, loadFlow });
+    // Janela de 24h (ou 72h de anúncio) aberta: o bloco de voz pode seguir pelo Railway
+    const now = Date.now();
+    const windowOpen = (contact.ultima_inbound_em && now - new Date(contact.ultima_inbound_em).getTime() < 24 * 3600000) ||
+      (contact.ad_window_expires_at && new Date(contact.ad_window_expires_at).getTime() > now);
+    // Contexto do disparo (ex.: data e hora do agendamento) entra nas variáveis das mensagens
+    const fast = await runFast(flow, firstNodeId(flow), { companyId: job.company_id, connectionId, phone: job.contact_phone, contact, loadFlow, context: job.context || {}, fresh: true, windowOpen: !!windowOpen });
     if (fast) console.log(`[JOB] id=${job.id} RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
     return fast;
   } catch (e) {
@@ -574,7 +586,8 @@ async function processAppointmentJob(job) {
     return true;
   }
 
-  // Chamar flowEngine diretamente
+  // Railway envia as mensagens direto pela Meta; o flowEngine registra e segue o restante
+  const fast = await fastJob(job, flowBase44Id, flow.connection_id || context.connection_id);
   const result = await callBase44Function('flowEngine', {
     action: 'startFlow',
     flow_id: flowBase44Id,
@@ -582,6 +595,8 @@ async function processAppointmentJob(job) {
     company_id: job.company_id,
     trigger_context: {
       ...context,
+      ...(fast || {}),
+      ...(fast ? { _source: 'railway_engine' } : {}),
       reference_id: job.reference_id,
       connection_id: flow.connection_id || context.connection_id || null,
     },
