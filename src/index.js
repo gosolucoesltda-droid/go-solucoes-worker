@@ -26,6 +26,7 @@ const { handleCampaign } = require('./campaign');
 const { setFactsPool } = require('./crmFacts');
 const { setBotSettingsPool } = require('./botSettings');
 const { serveAudio } = require('./voiceAudio');
+const { handlePublicApi } = require('./publicApi');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -97,6 +98,11 @@ const server = http.createServer(async (req, res) => {
       console.error('[WEBHOOK] erro:', e.message);
       if (!res.headersSent) { res.writeHead(500); res.end('Error'); }
     });
+  }
+
+  // API pública (mesmas rotas de gocrm.pro/functions/<nome>)
+  if (url.pathname.startsWith('/functions/')) {
+    return handlePublicApi(req, res, url, pgPool, callBase44Function);
   }
 
   res.writeHead(404, { 'Content-Type': 'application/json' });
