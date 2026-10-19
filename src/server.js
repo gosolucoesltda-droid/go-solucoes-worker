@@ -22,6 +22,7 @@ const { runFast, firstNodeId } = require('./fastPath');
 const { startWaitWatcher } = require('./waitWatcher');
 const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
+const { handleCampaign } = require('./campaign');
 const { setFactsPool } = require('./crmFacts');
 
 // ── Config ──
@@ -72,6 +73,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/flow/manual') {
     return handleManualStart(req, res, pgPool);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/campaign/send') {
+    return handleCampaign(req, res, () => pgPool);
   }
 
   if (req.method === 'POST' && url.pathname === '/ai/process') {
