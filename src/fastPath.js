@@ -8,6 +8,7 @@
 const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts');
 const { loadCreds } = require('./botSettings');
 const { generateVoice } = require('./voiceAudio');
+const { runSheetsBlock } = require('./googleSheets');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const CREDS_TTL_MS = 10 * 60 * 1000;
@@ -415,18 +416,22 @@ async function runSheets(node, vars, opts, flow) {
   const parts = used.map((c) => c.value).concat(op === 'insert' ? [] : [cfg.search_column, cfg.search_value]);
   if (!parts.every((p) => canRender(p, vars))) return null;
   const map = (list) => Object.fromEntries(cols(list).map((c) => [c.key, render(c.value, vars)]));
+  const context = {
+    integration_id: cfg.integration_id, spreadsheet_id: cfg.spreadsheet_id, spreadsheet_name: cfg.spreadsheet_name || '',
+    sheet_name: cfg.sheet_name, operation: cfg.operation || 'insert', mappings: map(cfg.columns), columns_to_update: map(cfg.update_columns),
+    search_column: render(cfg.search_column, vars), search_value: render(cfg.search_value, vars),
+    variable_mappings: (cfg.read_mappings || []).filter((m) => m.column && m.var_name).map((m) => ({ spreadsheet_column: m.column, crm_field: m.var_name })),
+    on_not_found: cfg.create_if_not_found ? 'create' : undefined,
+    flow_id: flow.base44_id, flow_name: flow.name, flow_block_id: node.id, contact_phone: opts.phone,
+  };
+  // Railway executa sozinho (chave do Google no Supabase); o Base44 só entra se faltar configuração
+  const own = await runSheetsBlock(opts.companyId, context);
+  if (own) return own;
   try {
     const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'googleSheets', company_id: opts.companyId, context: {
-        integration_id: cfg.integration_id, spreadsheet_id: cfg.spreadsheet_id, spreadsheet_name: cfg.spreadsheet_name || '',
-        sheet_name: cfg.sheet_name, operation: cfg.operation || 'insert', mappings: map(cfg.columns), columns_to_update: map(cfg.update_columns),
-        search_column: render(cfg.search_column, vars), search_value: render(cfg.search_value, vars),
-        variable_mappings: (cfg.read_mappings || []).filter((m) => m.column && m.var_name).map((m) => ({ spreadsheet_column: m.column, crm_field: m.var_name })),
-        on_not_found: cfg.create_if_not_found ? 'create' : undefined,
-        flow_id: flow.base44_id, flow_name: flow.name, flow_block_id: node.id, contact_phone: opts.phone,
-      } }),
+      body: JSON.stringify({ action: 'googleSheets', company_id: opts.companyId, context }),
       signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) return null;
