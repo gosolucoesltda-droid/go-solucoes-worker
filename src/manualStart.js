@@ -19,7 +19,7 @@ async function handleManualStart(req, res, pool) {
     if (!flow || !contact) return reply(200, { fast: null });
     const loadFlow = async (id) => (await pool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, connection_id])).rows[0] || null;
-    const fast = await runFast(flow, firstNodeId(flow), { companyId: company_id, connectionId: connection_id, phone: contact_phone, contact, loadFlow });
+    const fast = await runFast(flow, firstNodeId(flow), { companyId: company_id, connectionId: connection_id, phone: contact_phone, contact, loadFlow, fresh: true, windowOpen: true });
     if (fast) console.log(`[MANUAL] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) de "${flow.name}"`);
     await recordFast(pool, { companyId: company_id, connectionId: connection_id, contactId: contact.id, phone: contact_phone, flow, fast, startNodeId: firstNodeId(flow) });
     reply(200, { fast });

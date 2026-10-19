@@ -301,6 +301,7 @@ function conditionNext(node, c) {
 
 // Ação: o Base44 grava (tags, campos, tarefas, funil); o Railway só passa por ela e segue enviando.
 // false = ação que interrompe o fluxo (fica com o Base44); 'dirty' = efeito que o Railway não prevê
+const PASS_TYPES = ['condition', 'delay', 'random', 'action', 'api_request', 'elevenlabs_audio'];
 const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_task', 'add_note', 'create_appointment', 'assign_attendant', 'appointment_status'];
 function applyActions(node, sim, vars) {
   const actions = (node.data || node.config || {}).actions || [];
@@ -368,6 +369,34 @@ async function runApi(node, vars) {
   }
 }
 
+// Voz do ElevenLabs (bloco fora do agente): o Base44 gera, guarda o áudio e registra o uso;
+// o Railway recebe o link em {{audio_response}} e segue enviando. null = fica com o Base44
+async function runVoice(node, vars, opts, flowId) {
+  const cfg = node.data || node.config || {};
+  if (!opts.fresh || !opts.windowOpen || !canRender(cfg.text || '', vars)) return null;
+  const text = render(cfg.text || '', vars);
+  if (!text.trim() || text.length > 5000) return null;
+  const custom = cfg.use_default_settings === false;
+  try {
+    const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'elevenLabsAudio', company_id: opts.companyId, context: {
+        text, voice_id: cfg.voice_id || undefined, model_id: cfg.model_id || undefined, output_format: cfg.output_format || 'opus_48000_64',
+        stability: custom ? cfg.stability : undefined, similarity_boost: custom ? cfg.similarity_boost : undefined,
+        style: custom ? cfg.style : undefined, use_speaker_boost: custom ? cfg.use_speaker_boost : undefined,
+        flow_id: flowId, flow_block_id: node.id, contact_id: opts.contact?.id, contact_phone: opts.phone, input_text: cfg.text || '',
+      } }),
+      signal: AbortSignal.timeout(60000),
+    });
+    const data = await res.json();
+    return data.ok && data.audio_url ? data.audio_url : null;
+  } catch (e) {
+    console.error('[FAST] voz falhou (Base44 assume):', e.message);
+    return null;
+  }
+}
+
 // Aleatório (mesma regra do Base44): sorteio por porcentagem
 function pickRandom(vs) {
   if (!vs.length) return null;
@@ -398,7 +427,15 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   sim._facts = opts.facts || null;
   let dirty = false;
   const skipConditions = async () => {
-    for (let i = 0; ['condition', 'delay', 'random', 'action', 'api_request'].includes(node?.type) && i < 15; i++) {
+    for (let i = 0; PASS_TYPES.includes(node?.type) && i < 15; i++) {
+      if (node.type === 'elevenlabs_audio') {
+        const url = depth === 0 ? await runVoice(node, vars, opts, flow.base44_id) : null;
+        if (!url) return false;
+        vars[nk('audio_response')] = url; opts.audio = url;
+        executed.push(node.id);
+        node = nodes.find((n) => n.id === nextOf(node));
+        continue;
+      }
       if (node.type === 'api_request') {
         const r = await runApi(node, vars);
         if (!r) return false;
@@ -438,12 +475,14 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       if (nx === undefined) return false;
       node = nodes.find((n) => n.id === nx);
     }
-    return !['condition', 'delay', 'random', 'action', 'api_request'].includes(node?.type);
+    return !PASS_TYPES.includes(node?.type);
   };
   opts.api = opts.api || {};
   opts.actionAt = opts.actionAt || {};
-  const partial = () => (delays.length || Object.keys(opts.api).length)
-    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt } : null;
+  // Áudio gerado: o Base44 recebe o link em {{audio_response}}
+  const voiceVars = () => opts.audio ? { variables: { ...((opts.context || {}).variables || {}), audio_response: opts.audio } } : {};
+  const partial = () => (executed.length || Object.keys(opts.api).length)
+    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt, ...voiceVars() } : null;
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
@@ -493,7 +532,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt, ...(opts.question ? { _railway_question_node: opts.question } : {}) };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_action_at: opts.actionAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() };
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {

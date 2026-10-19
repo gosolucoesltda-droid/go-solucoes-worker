@@ -83,7 +83,7 @@ function clickCtx(ctx, msg) {
   return { ...(ctx || {}), [key]: title, last_reply: title };
 }
 
-async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false, context = {}) {
+async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false, context = {}, fresh = false) {
   const { rows: active } = force ? { rows: [] } : await pool.query(
     `select 1 from crm_flow_executions where flow_id = $1 and contact_phone = $2 and status in ('running','waiting') limit 1`,
     [flow.base44_id, msg.from]
@@ -94,7 +94,7 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false,
     const loadFlow = async (id) => (await pool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, contact.connection_id]
     )).rows[0] || null;
-    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow, context });
+    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow, context, fresh, windowOpen: true });
     let total = 0;
     for (let r = fast; r; r = r._railway_jump) total += (r._railway_messages || []).length;
     if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${total} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
@@ -108,7 +108,7 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false,
 }
 
 async function startFlow(ev, flow, contact, msg, pool) {
-  const fast = await tryFast(ev, pool, flow, firstNodeId(flow), contact, msg);
+  const fast = await tryFast(ev, pool, flow, firstNodeId(flow), contact, msg, false, {}, true);
   const t0 = Date.now();
   // Não bloqueia: o repasse ao Base44 (salvar mensagem/contato) segue em paralelo
   fetch(`${APP_URL}/functions/workerTrigger`, {
