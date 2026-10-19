@@ -570,7 +570,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const target = jumpTarget(node);
   if (target && loadFlow && depth < 3) {
     const dest = await loadFlow(target);
-    const sub = dest && await runFast(dest, firstNodeId(dest), opts, depth + 1);
+    const sub = dest && await runFast(dest, firstNodeId(dest), Object.assign(opts, { contact: sim }), depth + 1);
     // Mantém o que já passou antes do salto (atrasos, áudio, API) para o Base44 não repetir
     const base = partial() || { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null };
     return sub ? { ...base, _railway_jump: { flow_id: target, ...sub } } : partial();
@@ -623,7 +623,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
     const dest = await loadFlow(target2).catch(() => null);
-    const sub = dest && await runFast(dest, firstNodeId(dest), opts, depth + 1).catch((e) => { console.error('[FAST] salto falhou:', e.message); return null; });
+    const sub = dest && await runFast(dest, firstNodeId(dest), Object.assign(opts, { contact: sim }), depth + 1).catch((e) => { console.error('[FAST] salto falhou:', e.message); return null; });
     if (sub) result._railway_jump = { flow_id: target2, ...sub };
   }
   return result;
