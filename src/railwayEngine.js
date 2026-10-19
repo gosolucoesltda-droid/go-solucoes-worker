@@ -10,6 +10,8 @@
 const { runFast, firstNodeId, findClickedItem } = require('./fastPath');
 const { recordFast } = require('./supabaseRecorder');
 const { loadFacts, passesStageFilter } = require('./crmFacts');
+const { ownStart } = require('./flowOwner');
+const { resumeQuestion } = require('./questionResume');
 const PILOT_IDS = (process.env.RAILWAY_ENGINE_PHONE_IDS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
@@ -88,7 +90,9 @@ function clickCtx(ctx, msg) {
   return { ...(ctx || {}), [key]: title, last_reply: title };
 }
 
-async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false, context = {}, fresh = false) {
+// record=false: quem chama grava (o Railway pode assumir o fluxo inteiro)
+async function tryFast(ev, pool, flow, startNodeId, contact, msg, o = {}) {
+  const { force = false, context = {}, fresh = false, record = true } = o;
   const { rows: active } = force ? { rows: [] } : await pool.query(
     `select 1 from crm_flow_executions where flow_id = $1 and contact_phone = $2 and status in ('running','waiting') limit 1`,
     [flow.base44_id, msg.from]
@@ -104,7 +108,7 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false,
     for (let r = fast; r; r = r._railway_jump) total += (r._railway_messages || []).length;
     if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${total} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
     // Fase 2: grava no Supabase antes de avisar o Base44 (clique: só as mensagens, a execução já existe)
-    await recordFast(pool, { companyId: contact.company_id, connectionId: contact.connection_id, contactId: contact.id, phone: msg.from, flow: force ? null : flow, fast, startNodeId });
+    if (record) await saveFast(pool, contact, msg, force ? null : flow, fast, startNodeId);
     return fast;
   } catch (e) {
     console.error(`[ENGINE] id=${ev.id} envio direto falhou (Base44 assume):`, e.message);
@@ -112,8 +116,29 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, force = false,
   }
 }
 
+// Gravação provisória (o Base44 registra a versão definitiva e continua o fluxo)
+const saveFast = (pool, contact, msg, flow, fast, startNodeId) => recordFast(pool, { companyId: contact.company_id, connectionId: contact.connection_id, contactId: contact.id, phone: msg.from, flow, fast, startNodeId });
+
+// Clique assumido pelo Railway: igual ao Base44 (encerra quem aguardava e começa no destino do botão)
+async function ownClick(pool, flow, contact, msg, fast) {
+  const title = msg.raw.interactive?.button_reply?.title || msg.raw.interactive?.list_reply?.title || msg.text || '';
+  const key = msg.raw.interactive?.list_reply ? 'list_selected_title' : 'button_selected_title';
+  const clickId = msg.raw.interactive?.button_reply?.id || msg.raw.interactive?.list_reply?.id || '';
+  const trigger = { connection_id: contact.connection_id, button_text: title, button_id: clickId, [key]: title, last_reply: title, whatsapp_window_open: true, _source: 'railway_engine' };
+  if (!(await ownStart(pool, { flow, contact, phone: msg.from, fast, trigger, endWaiting: true }))) return false;
+  // O webhook do Base44 recebe o mesmo clique depois: as travas fazem ele ignorar
+  await claim(pool, { base44_id: `resume:${msg.raw.id}` }, msg.from, 86400);
+  await claim(pool, { base44_id: `btn:${msg.raw.id}` }, msg.from, 86400);
+  return true;
+}
+
 async function startFlow(ev, flow, contact, msg, pool) {
-  const fast = await tryFast(ev, pool, flow, firstNodeId(flow), contact, msg, false, {}, true);
+  const startNodeId = firstNodeId(flow);
+  const trigger = { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine' };
+  const fast = await tryFast(ev, pool, flow, startNodeId, contact, msg, { fresh: true, record: false });
+  // Fase 5: caminho todo do Railway → ele mesmo registra a execução; o Base44 não é chamado
+  if (fast && await ownStart(pool, { flow, contact, phone: msg.from, fast, trigger })) return;
+  await saveFast(pool, contact, msg, flow, fast, startNodeId);
   const t0 = Date.now();
   // Não bloqueia: o repasse ao Base44 (salvar mensagem/contato) segue em paralelo
   fetch(`${APP_URL}/functions/workerTrigger`, {
@@ -125,7 +150,7 @@ async function startFlow(ev, flow, contact, msg, pool) {
       contact_phone: msg.from,
       company_id: contact.company_id,
       // Filtros do gatilho já avaliados aqui (o Base44 não reavalia com outra regra e perde o que já foi enviado)
-      context: { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine', _skip_filters: true, ...(fast || {}) },
+      context: { ...trigger, _skip_filters: true, ...(fast || {}) },
     }),
   })
     .then((res) => console.log(`[ENGINE] id=${ev.id} DISPAROU "${flow.name}" (${flow.trigger_type}) status=${res.status} em ${Date.now() - t0}ms`))
@@ -173,7 +198,7 @@ async function processEvent(ev, pool) {
   }
 
   const { rows: contacts } = await pool.query(
-    `select id, company_id, connection_id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields, created_at from crm_contacts
+    `select id, company_id, connection_id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields, bsuid, created_at from crm_contacts
      where telefone = $1 and connection_id = (select connection_id from flows where phone_number_id = $2 limit 1) limit 1`,
     [msg.from, ev.phone_number_id]
   );
@@ -210,8 +235,10 @@ async function processEvent(ev, pool) {
             [contact.company_id, contact.connection_id]
           );
           const hit = findClickedItem(botFlows, clickId);
-          const railway = hit ? await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, true, clickCtx(waiting[0].context, msg)) : null;
+          const railway = hit ? await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, { force: true, context: clickCtx(waiting[0].context, msg), record: false }) : null;
+          if (railway && await ownClick(pool, hit.flow, contact, msg, railway)) return false;
           if (railway) {
+            await saveFast(pool, contact, msg, null, railway);
             const t2 = Date.now();
             const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
               method: 'POST',
@@ -243,7 +270,9 @@ async function processEvent(ev, pool) {
         [contact.company_id, contact.connection_id]
       );
       const hit = findClickedItem(botFlows, itemId);
-      if (hit) railway = await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, false, clickCtx({}, msg));
+      if (hit) railway = await tryFast(ev, pool, hit.flow, hit.next_node_id, contact, msg, { context: clickCtx({}, msg), record: false });
+      if (railway && await ownClick(pool, hit.flow, contact, msg, railway)) return false;
+      if (railway) await saveFast(pool, contact, msg, hit.flow, railway, hit.next_node_id);
     }
     const t0 = Date.now();
     const res = await fetch(`${APP_URL}/functions/workerTrigger`, {
@@ -254,6 +283,10 @@ async function processEvent(ev, pool) {
     console.log(`[ENGINE] id=${ev.id} CLIQUE "${msg.text}" status=${res.status} ${(await res.text()).slice(0, 120)} em ${Date.now() - t0}ms`);
     return false;
   }
+
+  // Fase 5: resposta a uma pergunta do fluxo → o Railway retoma (sem disparar gatilhos, igual ao Base44)
+  if (msg.type === 'text' && await resumeQuestion(ev, pool, contact, msg, { tryFast, claim })
+    .catch((e) => { console.error(`[ENGINE] id=${ev.id} retomada da pergunta falhou (Base44 assume):`, e.message); return false; })) return false;
 
   const types = msg.type === 'text' ? ['inbound_any', 'keyword'] : ['inbound_any'];
   const { rows: flows } = await pool.query(

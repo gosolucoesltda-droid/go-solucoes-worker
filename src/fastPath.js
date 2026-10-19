@@ -588,16 +588,16 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const m = await sendTemplate(creds, phone, raw, vars);
         messages.push(m);
         // Botões de resposta: para aqui; o clique segue pelo botão do template
-        if (m.template_buttons.some((b) => b.type === 'QUICK_REPLY')) { stop = node.id; break; }
+        if (m.template_buttons.some((b) => b.type === 'QUICK_REPLY')) { stop = node.id; opts.stopSub = raw; break; }
         continue;
       }
-      if (raw.type === 'list') { messages.push(await sendList(creds, phone, node, raw)); stop = node.id; break; }
+      if (raw.type === 'list') { messages.push(await sendList(creds, phone, node, raw)); stop = node.id; opts.stopSub = raw; break; }
       if (raw.type === 'question') {
         // Pergunta: envia o texto e para; o Base44 registra a espera pela resposta
         const text = render(raw.question_text ?? raw.question, vars);
         const data = await metaPost(creds, 'messages', payloadFor(phone, text, []));
         messages.push({ body: text, buttons: [], wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
-        stop = node.id; opts.question = node.id; break;
+        stop = node.id; opts.question = node.id; opts.stopSub = raw; break;
       }
       if (['image', 'audio', 'video', 'file'].includes(raw.type)) { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
@@ -610,12 +610,15 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       const data = await res.json();
       if (data.error) throw new Error(`Meta: ${data.error.message}`);
       messages.push({ body: sub.content || '', buttons, wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
-      if (buttons.some((b) => b.type !== 'url')) { stop = node.id; break; }
+      if (buttons.some((b) => b.type !== 'url')) { stop = node.id; opts.stopSub = raw; break; }
     }
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
   const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() };
+  // Para o Railway saber se terminou o caminho sozinho (fim do fluxo ou parada num botão/lista/pergunta).
+  // Não enumerável: não vai junto no contexto enviado ao Base44.
+  Object.defineProperty(result, '_meta', { value: { ended: !stop && !node, stopSub: stop ? opts.stopSub || null : null }, enumerable: false });
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
