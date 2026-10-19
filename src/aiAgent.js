@@ -4,7 +4,8 @@
 // O Base44 só registra (mensagens e logs) com o que vem em _record.
 // ═══════════════════════════════════════════════════════════
 const { buildSystemPrompt, matchByLabel } = require('./aiPrompt');
-const { getCreds, metaPost, payloadFor } = require('./fastPath');
+const { getCreds, metaPost, payloadFor, runFast } = require('./fastPath');
+const { recordFast } = require('./supabaseRecorder');
 
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
@@ -251,7 +252,26 @@ async function processAi(pool, p) {
 
   record.log = { input_message: text, output_message: send, tokens_used_input: data.usage?.prompt_tokens || 0, tokens_used_output: data.usage?.completion_tokens || 0, model_used: model, response_time_ms: Date.now() - t0, error: null };
   console.log(`[AI] ${phone} respondeu em ${Date.now() - t0}ms branch=${branch || '-'} audio=${asAudio}`);
-  return { ok: true, response: send, matched_branch: branch, mapped_variables: mapped, response_mode: rMode, sent_as_audio: asAudio, sent_as_button: asButton, _record: record };
+
+  // Saída escolhida pela IA (ex.: transferir para atendente): o Railway já envia os blocos seguintes;
+  // o Base44 só registra, executa as ações (atribuir atendente, etiquetas) e segue o restante
+  const connId = p.connection_id || contact.connection_id;
+  const next = branch && conds.find((c) => c.id === branch)?.next_node_id;
+  let fast = null;
+  if (next && p.flow_id) {
+    try {
+      const { rows: [flow] } = await pool.query(`select base44_id, name, nodes from flows where base44_id = $1 limit 1`, [p.flow_id]);
+      const loadFlow = async (id) => (await pool.query(
+        `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, connId])).rows[0] || null;
+      if (flow) fast = await runFast(flow, next, { companyId: company, connectionId: connId, phone, contact, loadFlow, context: mapped });
+      if (fast) console.log(`[AI] ${phone} RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) da saída "${branch}"`);
+    } catch (e) {
+      console.error('[AI] saída no Railway falhou (Base44 segue):', e.message);
+      fast = null;
+    }
+  }
+  await recordFast(pool, { companyId: company, connectionId: connId, contactId: contact.id, phone, fast: { _railway_messages: [...record.messages, ...(fast?._railway_messages || [])] } });
+  return { ok: true, response: send, matched_branch: branch, mapped_variables: mapped, response_mode: rMode, sent_as_audio: asAudio, sent_as_button: asButton, _railway_fast: fast || undefined, _record: record };
 }
 
 async function handleAi(req, res, pool) {
