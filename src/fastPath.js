@@ -421,6 +421,7 @@ async function runSheets(node, vars, opts, flow) {
       } }),
       signal: AbortSignal.timeout(60000),
     });
+    if (!res.ok) return null;
     const data = await res.json();
     return typeof data?.ok === 'boolean' ? data : null;
   } catch (e) {
