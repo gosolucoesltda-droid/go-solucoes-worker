@@ -4,6 +4,7 @@
 // Gravar campos usa o Base44 (datas, agendamentos e gatilhos); fluxos de tag também.
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
+const { generatePassword } = require('./passwordGenerator');
 
 const newId = () => crypto.randomBytes(12).toString('hex');
 const digits = (v) => String(v || '').replace(/\D/g, '');
@@ -159,6 +160,11 @@ const ROUTES = { getContactByPhone, getContactByField, listContactsByTag, setCon
 async function handlePublicApi(req, res, url, pool, callBase44Function) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const name = url.pathname.split('/').pop();
+  if (name === 'generatePassword') {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    return send(res, ...generatePassword(raw));
+  }
   const route = ROUTES[name];
   if (!route) return send(res, 404, { error: 'Rota não encontrada' });
   try {
