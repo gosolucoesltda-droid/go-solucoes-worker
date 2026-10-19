@@ -21,7 +21,9 @@ async function continueFast(pool, ex, nextId) {
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, ex.connection_id])).rows[0] || null;
     const fast = await runFast(flow, nextId, { companyId: ex.company_id, connectionId: ex.connection_id, phone: ex.contact_phone, contact, loadFlow, context: ex.context || {} });
     if (fast) console.log(`[WAIT] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) após atraso exec=${ex.id}`);
-    await recordFast(pool, { companyId: ex.company_id, connectionId: ex.connection_id, contactId: contact.id, phone: ex.contact_phone, fast, executionId: ex.id, startNodeId: nextId });
+    // Só grava as mensagens: a execução continua "waiting" até o Base44 retomar e registrar
+    // (marcar "running" aqui fazia o Base44 pular a retomada → fluxo travado + reenvio).
+    await recordFast(pool, { companyId: ex.company_id, connectionId: ex.connection_id, contactId: contact.id, phone: ex.contact_phone, fast: { _railway_messages: fast?._railway_messages || [], _railway_jump: fast?._railway_jump } });
     return fast;
   } catch (e) {
     console.error(`[WAIT] envio direto falhou (Base44 assume) exec=${ex.id}:`, e.message);
