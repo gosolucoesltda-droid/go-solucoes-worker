@@ -214,13 +214,13 @@ async function sendMedia(creds, to, sub, vars) {
   return { tipo: 'audio', body: 'Áudio', audio_media_id: up.id, buttons: [], wa_id: data.messages?.[0]?.id || null, at: at() };
 }
 
-// Salto "transferir" (mesma leitura do Base44): devolve o fluxo destino ou null
+// Salto (mesma leitura do Base44), nos dois modos: o Railway envia o começo do fluxo destino.
+// "transferir" encerra este fluxo; "chamar" o Base44 continua este fluxo depois do salto.
 function jumpTarget(node) {
   if (node?.type !== 'flow_jump') return null;
   const d = node.data || node.config || {};
   const c = node.config || node.data || {};
-  const target = d.target_flow_id || c.target_flow_id;
-  return target && (d.mode === 'transfer' || c.mode === 'transfer') ? target : null;
+  return d.target_flow_id || c.target_flow_id || null;
 }
 
 // Condição (mesma regra do Base44): devolve o próximo nó, ou undefined se o Railway não sabe avaliar
@@ -566,7 +566,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   if (target && loadFlow && depth < 3) {
     const dest = await loadFlow(target);
     const sub = dest && await runFast(dest, firstNodeId(dest), opts, depth + 1);
-    return sub ? { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null, _railway_jump: { flow_id: target, ...sub } } : null;
+    // Mantém o que já passou antes do salto (atrasos, áudio, API) para o Base44 não repetir
+    const base = partial() || { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null };
+    return sub ? { ...base, _railway_jump: { flow_id: target, ...sub } } : partial();
   }
   if (!isSupported(node, vars, opts.wait.left)) {
     return partial();
