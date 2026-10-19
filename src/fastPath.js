@@ -366,7 +366,8 @@ async function runApi(node, vars) {
       vars[nk(m.field_key)] = String(v); mapped[m.field_key] = String(v);
     }
     if (cfg.save_status_to) vars[nk(cfg.save_status_to)] = String(res.status);
-    return { mapped, saved: { ok: res.ok, status: res.status, text }, next: res.ok ? nextOf(node) : nextErr, stable: stable && (res.ok || !!nextErr) };
+    // "at": horário da requisição, para o aviso de campo atualizado ficar na posição certa da conversa
+    return { mapped, saved: { ok: res.ok, status: res.status, text, at: new Date().toISOString() }, next: res.ok ? nextOf(node) : nextErr, stable: stable && (res.ok || !!nextErr) };
   } catch (e) {
     return { saved: { error: e.message }, next: nextErr, stable: false };
   }
