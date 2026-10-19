@@ -403,8 +403,11 @@ async function runSheets(node, vars, opts, flow) {
   const cfg = { ...(node.config || {}), ...(node.data || {}) };
   if (!opts.fresh || !cfg.integration_id || !cfg.spreadsheet_id || !cfg.sheet_name) return null;
   const cols = (list) => (list || []).filter((c) => c.key);
-  const parts = [...cols(cfg.columns), ...cols(cfg.update_columns), ...(cfg.contact_mappings || [])].map((c) => c.value)
-    .concat([cfg.search_column, cfg.search_value]);
+  // Só os campos que a operação escolhida usa (as outras abas podem ter sobras)
+  const op = cfg.operation || 'insert';
+  const used = op === 'insert' ? [...cols(cfg.columns), ...(cfg.contact_mappings || [])]
+    : op === 'update' ? [...cols(cfg.columns), ...cols(cfg.update_columns), ...(cfg.contact_mappings || [])] : [];
+  const parts = used.map((c) => c.value).concat(op === 'insert' ? [] : [cfg.search_column, cfg.search_value]);
   if (!parts.every((p) => canRender(p, vars))) return null;
   const map = (list) => Object.fromEntries(cols(list).map((c) => [c.key, render(c.value, vars)]));
   try {
