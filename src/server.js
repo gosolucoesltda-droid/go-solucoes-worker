@@ -19,6 +19,7 @@ const http = require('http');
 const { Client, Pool } = require('pg');
 const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
+const { liveTimeline } = require('./liveTimeline');
 const { startWaitWatcher } = require('./waitWatcher');
 const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
@@ -495,7 +496,8 @@ async function fastJob(job, flowId, connectionId) {
     const windowOpen = (contact.ultima_inbound_em && now - new Date(contact.ultima_inbound_em).getTime() < 24 * 3600000) ||
       (contact.ad_window_expires_at && new Date(contact.ad_window_expires_at).getTime() > now);
     // Contexto do disparo (ex.: data e hora do agendamento) entra nas variáveis das mensagens
-    const fast = await runFast(flow, firstNodeId(flow), { companyId: job.company_id, connectionId, phone: job.contact_phone, contact, loadFlow, context: job.context || {}, fresh: true, windowOpen: !!windowOpen });
+    const live = liveTimeline(pgPool, { companyId: job.company_id, connectionId, contactId: contact.id, phone: job.contact_phone });
+    const fast = await runFast(flow, firstNodeId(flow), { companyId: job.company_id, connectionId, phone: job.contact_phone, contact, loadFlow, context: job.context || {}, fresh: true, windowOpen: !!windowOpen, live, started: true });
     if (fast) console.log(`[JOB] id=${job.id} RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
     return fast;
   } catch (e) {
