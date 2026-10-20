@@ -21,6 +21,9 @@ const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
 const { liveTimeline } = require('./liveTimeline');
 const { startWaitWatcher } = require('./waitWatcher');
+const { startTimeoutWatcher, checkTimeoutsNow } = require('./timeoutWatcher');
+const { startFieldDateSweep } = require('./fieldDateSweep');
+const { startStaleDealsSweep } = require('./staleDealsSweep');
 const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
 const { handleCampaign } = require('./campaign');
@@ -441,9 +444,9 @@ async function processJob(job) {
       errorMsg = result.error || null;
       retry = result.retry !== false;
     } else if (job.job_type === 'flow_timeout') {
-      // Timeout de IA / menu: o checkFlowTimeouts resolve todas as expirações vencidas
-      const result = await callBase44Function('checkFlowTimeouts', {});
-      success = result?.ok !== false;
+      // Timeout de IA / menu: o Railway resolve as expirações vencidas na hora
+      await checkTimeoutsNow(pgPool, callBase44Function);
+      success = true;
     } else if (job.job_type === 'appointment_reminder') {
       success = await processAppointmentJob(job);
     } else {
@@ -788,15 +791,16 @@ function startTimeoutChecks() {
     // quando o campo muda (contactFieldUpdater) e disparados via NOTIFY. A varredura
     // de segurança (repetir todo ano) roda 1x/dia no Base44.
 
-    // checkFlowTimeouts — só chama o Base44 quando o espelho no Supabase mostra algo vencido
+    // checkFlowTimeouts (reserva do Base44) — só quando há execução travada ou espera que o
+    // Railway não resolveu em 2 min (atrasos e tempos limite são resolvidos aqui em ~10s)
     try {
       if (pgPool) {
         const { rows } = await pgPool.query(
           `select 1 from crm_flow_executions
            where (status = 'running' and started_at < now() - interval '2 minutes')
               or (status = 'waiting' and (
-                   delay_until <= now()
-                or (context->>'_wait_timeout_at')::timestamptz <= now()
+                   delay_until <= now() - interval '2 minutes'
+                or nullif(context->>'_wait_timeout_at', '')::timestamptz <= now() - interval '2 minutes'
                 or (context->>'_menu_timeout_at')::timestamptz <= now()
                 or not (context ? '_wait_type')))
            limit 1`
@@ -865,6 +869,9 @@ async function main() {
   startTimeoutChecks();
   startWebhookRetries(() => pgPool);
   startWaitWatcher(pgPool, callBase44Function);
+  startTimeoutWatcher(pgPool, callBase44Function);
+  startFieldDateSweep(pgPool);
+  startStaleDealsSweep(pgPool, callBase44Function);
 }
 
 main().catch(e => {
