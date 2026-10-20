@@ -4,8 +4,9 @@
 // (tempos limite de resposta e da IA ficam no timeoutWatcher.js)
 // Lê crm_flow_executions a cada 10s; uma trava claim_flow_trigger por
 // execução + horário evita retomada dupla.
-// Quando todo o caminho depois do atraso é do Railway, ele mesmo registra a
-// execução (ownResume); senão o Base44 continua como antes.
+// Quando todo o caminho depois do atraso é do Railway (mensagens, condições, ações,
+// requisição de API, planilha, salto "transferir" e outro atraso longo), ele mesmo
+// registra a execução e grava os efeitos (ownResume); senão o Base44 continua como antes.
 // ═══════════════════════════════════════════════════════════
 const INTERVAL_MS = 10000;
 const { runFast } = require('./fastPath');
@@ -18,15 +19,21 @@ async function continueFast(pool, ex, nextId) {
   try {
     const { rows: [flow] } = await pool.query(`select base44_id, name, nodes, trigger_type from flows where base44_id = $1 limit 1`, [ex.flow_id]);
     const { rows: [contact] } = await pool.query(
-      `select id, company_id, connection_id, nome, email, empresa, telefone, subscriber_active, automation_paused_until, tags, custom_fields from crm_contacts
-       where telefone = $1 and connection_id = $2 limit 1`, [ex.contact_phone, ex.connection_id]);
+      `select id, company_id, connection_id, nome, email, empresa, telefone, observacoes, assigned_to, subscriber_active, automation_paused_until, tags, custom_fields,
+       ultima_inbound_em, ad_window_expires_at from crm_contacts where telefone = $1 and connection_id = $2 limit 1`, [ex.contact_phone, ex.connection_id]);
     if (!flow || !contact || contact.subscriber_active === false || (contact.automation_paused_until && new Date(contact.automation_paused_until) > new Date())) return null;
     const loadFlow = async (id) => (await pool.query(
-      `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, ex.connection_id])).rows[0] || null;
+      `select base44_id, name, nodes, trigger_type from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, ex.connection_id])).rows[0] || null;
     const live = liveTimeline(pool, { companyId: ex.company_id, connectionId: ex.connection_id, contactId: contact.id, phone: ex.contact_phone });
-    const fast = await runFast(flow, nextId, { companyId: ex.company_id, connectionId: ex.connection_id, phone: ex.contact_phone, contact, loadFlow, context: ex.context || {}, live });
+    // Janela de 24h (ou 72h de anúncio) aberta: o bloco de voz pode seguir pelo Railway
+    const now = Date.now();
+    const windowOpen = (contact.ultima_inbound_em && now - new Date(contact.ultima_inbound_em).getTime() < 24 * 3600000) ||
+      (contact.ad_window_expires_at && new Date(contact.ad_window_expires_at).getTime() > now);
+    // apply: ações, API, planilha, salto e atraso longo também ficam com o Railway (fresh: blocos ainda não executados)
+    const fast = await runFast(flow, nextId, { companyId: ex.company_id, connectionId: ex.connection_id, phone: ex.contact_phone, contact, loadFlow,
+      context: ex.context || {}, live, apply: true, fresh: true, windowOpen: !!windowOpen });
     if (fast) console.log(`[WAIT] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) após atraso exec=${ex.id}`);
-    return fast ? { fast, flow, contact } : null;
+    return fast ? { fast, flow, contact, live } : null;
   } catch (e) {
     console.error(`[WAIT] envio direto falhou (Base44 assume) exec=${ex.id}:`, e.message);
     return null;
@@ -46,7 +53,7 @@ async function resumeDelay(pool, ex, callBase44Function, key) {
   const fast = run?.fast || null;
   // Caminho todo do Railway: ele mesmo registra (sem chamar o Base44)
   if (fast) {
-    const owned = await ownResume(pool, { exec: ex, flow: run.flow, contact: run.contact, phone: ex.contact_phone, fast, ctx })
+    const owned = await ownResume(pool, { exec: ex, flow: run.flow, contact: run.contact, phone: ex.contact_phone, fast, ctx, live: run.live })
       .catch((e) => { console.error(`[WAIT] registro falhou (Base44 assume) exec=${ex.id}:`, e.message); return false; });
     if (owned) return;
     // Só grava as mensagens: a execução continua "waiting" até o Base44 retomar e registrar

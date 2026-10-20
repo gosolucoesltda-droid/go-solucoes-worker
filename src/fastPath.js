@@ -9,6 +9,7 @@ const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts
 const { loadCreds } = require('./botSettings');
 const { generateVoice } = require('./voiceAudio');
 const { runSheetsBlock } = require('./googleSheets');
+const { fieldValue, delayResumeAt } = require('./flowDates');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const CREDS_TTL_MS = 10 * 60 * 1000;
@@ -338,6 +339,76 @@ function applyActions(node, sim, vars, notices = []) {
   return dirty ? 'dirty' : true;
 }
 
+// Retomada de atraso: o Railway calcula tudo que a ação faz (mesma regra do flowNodeAction.ts do Base44)
+// e guarda em opts.records / sim; o flowOwner grava quando assume. false = fica com o Base44 (nada muda)
+async function applyActionsOwn(node, sim, vars, notices, opts) {
+  const actions = (node.data || node.config || {}).actions || [];
+  const ctx = opts.context || {};
+  const texts = (a) => a.type === 'set_variable' && a.operation === 'set' ? [a.value] : a.type === 'add_note' ? [a.content]
+    : a.type === 'create_task' || a.type === 'create_appointment' ? [a.title, a.description] : a.type === 'move_funnel' ? [a.deal_title_template] : [];
+  if (!actions.every((a) => PASS_ACTIONS.includes(a.type) && texts(a).every((t) => canRender(t, vars)))) return false;
+  // Valores dos campos antes de mexer em qualquer coisa (se o tipo do campo não puder ser lido, o Base44 assume)
+  const col = { ...(ctx.collected || {}), ...opts.collected };
+  const vals = [];
+  try {
+    for (const a of actions) {
+      if (a.type !== 'set_variable' || !a.field_key) { vals.push(null); continue; }
+      const op = a.operation;
+      const raw = op === 'set' ? render(a.value || '', vars) : op === 'last_reply' ? (ctx.last_reply || '') : op === 'variable' ? (ctx.variables?.[a.source_var] || '')
+        : op === 'increment' ? String(Number(col[a.field_key] || 0) + Number(a.value || 1)) : '';
+      const v = await fieldValue(opts.companyId, a.field_key, raw);
+      vals.push({ v, old: col[a.field_key] ?? null });
+      col[a.field_key] = v;
+    }
+  } catch (e) {
+    console.error('[FAST] tipo do campo indisponível (Base44 assume):', e.message);
+    return false;
+  }
+  const at = new Date().toISOString();
+  actions.forEach((a, i) => {
+    applyFactAction(sim._facts, a);
+    if (a.type === 'add_tag') {
+      const added = (a.tags || []).filter((t, j, all) => !sim.tags.includes(t) && all.indexOf(t) === j);
+      sim.tags.push(...added);
+      if (added.length) notices.push(['tag_added', added.join(', '), { tags: added }]);
+    } else if (a.type === 'remove_tag') {
+      const removed = sim.tags.filter((t) => (a.tags || []).includes(t));
+      sim.tags = sim.tags.filter((t) => !(a.tags || []).includes(t));
+      if (removed.length) notices.push(['tag_removed', removed.join(', '), { tags: removed }]);
+    } else if (a.type === 'set_variable' && vals[i]) {
+      const { v, old } = vals[i];
+      sim.custom_fields[a.field_key] = v; opts.collected[a.field_key] = v; opts.sources[a.field_key] = 'flow';
+      vars[nk(a.field_key)] = v; vars[`custom.${nk(a.field_key)}`] = v;
+      notices.push(['field_updated', a.field_key, { field: a.field_key, old_value: old, new_value: v }]);
+    } else if (a.type === 'clear_variable' && a.field_key) {
+      delete sim.custom_fields[a.field_key]; delete opts.collected[a.field_key];
+      delete vars[nk(a.field_key)]; delete vars[`custom.${nk(a.field_key)}`];
+    } else if (a.type === 'set_status') {
+      sim.custom_fields.attendance_status = a.status;
+    } else if (a.type === 'assign_attendant') {
+      if ((a.mode || 'specific') === 'remove') { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
+    } else if (a.type === 'move_funnel') {
+      const title = render(a.deal_title_template || 'Negocio - {{contact_name}}', { ...vars, contact_name: sim.nome || vars.contact_phone });
+      opts.records.push({ type: 'move_funnel', stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: a.value, title });
+    } else if (a.type === 'create_task') {
+      let due = a.due_date || null;
+      if (a.due_date_type === 'relative' || (!a.due_date_type && a.due_date_days != null)) due = new Date(Date.now() + Number(a.due_date_days ?? 1) * 86400000).toISOString().slice(0, 10);
+      opts.records.push({ type: 'create_task', title: render(a.title || 'Nova tarefa', vars), description: render(a.description || '', vars), responsible: a.responsible || '', due_date: due, priority: a.priority || 'Baixa' });
+    } else if (a.type === 'add_note') {
+      opts.records.push({ type: 'add_note', content: render(a.content || '', vars), at });
+    } else if (a.type === 'create_appointment') {
+      const [h, m] = (a.time || '09:00').split(':').map(Number);
+      const start = a.date_type === 'fixed' && a.date ? new Date(`${a.date}T00:00:00Z`) : new Date(Date.now() + Number(a.date_days ?? 1) * 86400000);
+      start.setUTCHours(h || 9, m || 0, 0, 0);
+      const end = new Date(start.getTime() + Number(a.duration_minutes || 60) * 60000);
+      opts.records.push({ type: 'create_appointment', title: render(a.title || 'Agendamento', vars), description: render(a.description || '', vars), start: start.toISOString(), end: end.toISOString(), assigned_to: a.assigned_to || '' });
+    }
+  });
+  return true;
+}
+
+const jumpMode = (n) => (n.data || {}).mode === 'transfer' || (n.config || {}).mode === 'transfer' ? 'transfer' : 'call';
+
 // Requisição de API (mesma montagem do Base44). O Base44 reaproveita a resposta para mapear e salvar campos.
 // false = usa variável que o Railway não conhece (fica com o Base44)
 async function runApi(node, vars) {
@@ -457,11 +528,14 @@ async function runSheets(node, vars, opts, flow) {
   }
 }
 // Mesmo efeito que o Base44 aplica depois da planilha (para as mensagens seguintes)
-function applySheets(node, r, vars, sim) {
+// opts.collected / opts.sources: o que o Base44 guarda no contexto (usados quando o Railway assume a execução)
+function applySheets(node, r, vars, sim, opts = {}) {
   const cfg = { ...(node.config || {}), ...(node.data || {}) };
+  const col = opts.collected || {};
+  const src = opts.sources || {};
   const set = (k, v) => {
     vars[nk(k)] = v;
-    if (['nome', 'email', 'empresa', 'telefone'].includes(k)) sim[k] = v; else sim.custom_fields[k] = v;
+    if (['nome', 'email', 'empresa', 'telefone'].includes(k)) sim[k] = v; else { sim.custom_fields[k] = v; col[k] = v; src[k] = 'sheets'; }
     if (k === 'nome') { vars.contact_name = v; vars.primeiro_nome = String(v).split(' ')[0]; }
   };
   if (cfg.operation === 'insert' || cfg.operation === 'update') {
@@ -469,11 +543,12 @@ function applySheets(node, r, vars, sim) {
   }
   if (cfg.operation === 'read') {
     const found = (r.rows_affected || 0) > 0;
-    if (cfg.save_results_to) vars[nk(cfg.save_results_to)] = found ? 'found' : 'not_found';
+    if (cfg.save_results_to) { vars[nk(cfg.save_results_to)] = found ? 'found' : 'not_found'; col[cfg.save_results_to] = found ? 'found' : 'not_found'; }
     const row = r.data?.data || r.data || {};
     for (const m of cfg.read_mappings || []) {
       if (!m.var_name) continue;
       const v = row[m.column] ?? '';
+      col[m.var_name] = v;
       if (found) set(m.var_name, v); else vars[nk(m.var_name)] = v;
     }
   }
@@ -517,6 +592,18 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   if (!opts.facts && needsFacts(nodes)) opts.facts = await loadFacts(companyId, phone);
   sim._facts = opts.facts || null;
   let dirty = false;
+  // Retomada de atraso (opts.apply): o Railway também passa por ações, API, planilha, salto e atraso longo.
+  // Ele só simula aqui; o flowOwner grava os efeitos quando assume a execução (senão o Base44 faz tudo como antes)
+  opts.records = opts.records || [];
+  opts.sources = opts.sources || {};
+  opts.collected = opts.collected || {};
+  opts.sim = sim;
+  let longDelay = null;  // atraso longo alcançado: a execução volta a esperar
+  let handoff = false;   // resposta que o Base44 trata (erro de API/planilha): ele segue daqui
+  const passed = [];     // ações, API e planilhas percorridas (registro de blocos no painel)
+  const meta = (extra) => ({ applied: !!opts.apply, handoff, delay: longDelay, sim: opts.sim, records: opts.records, sources: opts.sources, collected: opts.collected, passed, ...extra });
+  // Não enumerável: não vai junto no contexto enviado ao Base44
+  const withMeta = (r, extra) => { if (r) Object.defineProperty(r, '_meta', { value: meta(extra), enumerable: false }); return r; };
   const skipConditions = async () => {
     for (let i = 0; PASS_TYPES.includes(node?.type) && i < 15; i++) {
       if (node.type === 'elevenlabs_audio') {
@@ -532,10 +619,11 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         if (!r) return false;
         opts.sheets[node.id] = r;
         // Falha na planilha: o Base44 segue daqui com o resultado salvo
-        if (!r.ok) { node = null; return true; }
-        applySheets(node, r, vars, sim);
-        // Leitura muda campos que as condições seguintes usam: elas ficam com o Base44
-        if ((node.data || node.config || {}).operation === 'read') dirty = true;
+        if (!r.ok) { handoff = true; node = null; return true; }
+        applySheets(node, r, vars, sim, opts);
+        // Leitura muda campos que as condições seguintes usam: elas ficam com o Base44 (na retomada o Railway já sabe os valores)
+        if ((node.data || node.config || {}).operation === 'read' && !opts.apply) dirty = true;
+        passed.push(node.id);
         node = nodes.find((n) => n.id === nextOf(node));
         continue;
       }
@@ -543,25 +631,47 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const r = await runApi(node, vars);
         if (!r) return false;
         opts.api[node.id] = r.saved;
+        if (opts.apply) {
+          // Mesma conversão de datas do Base44 (o Railway grava os campos depois)
+          const cfg = { ...(node.config || {}), ...(node.data || {}) };
+          try {
+            for (const [k, v] of Object.entries(r.mapped || {})) {
+              const cv = String(await fieldValue(companyId, k, v));
+              r.mapped[k] = cv; vars[nk(k)] = cv; vars[`custom.${nk(k)}`] = cv; opts.collected[k] = cv; opts.sources[k] = 'api';
+            }
+          } catch (e) {
+            console.error('[FAST] tipo do campo indisponível (Base44 assume):', e.message);
+            handoff = true; node = null; return true;
+          }
+          if (cfg.save_status_to && r.saved.status) opts.collected[cfg.save_status_to] = String(r.saved.status);
+        }
         // Campos que mudaram (valores que podem virar data ficam para o Base44 registrar)
         for (const [k, v] of Object.entries(r.mapped || {})) {
           const old = sim.custom_fields[k];
-          if (/^\d{10,13}$/.test(v) || String(old ?? '') === v) continue;
+          if ((!opts.apply && /^\d{10,13}$/.test(v)) || String(old ?? '') === v) continue;
           await notice('field_updated', k, { field: k, old_value: old ?? null, new_value: v });
         }
         Object.assign(sim.custom_fields, r.mapped || {});
+        if (opts.apply) {
+          // Falha de conexão ou erro sem saída de erro: o Base44 segue daqui com a resposta salva
+          if (r.saved.error || (!r.saved.ok && !r.next)) { handoff = true; node = null; return true; }
+          passed.push(node.id);
+          node = r.next ? nodes.find((n) => n.id === r.next) : null;
+          continue;
+        }
         // Resposta que o Base44 pode tratar diferente: ele segue daqui com a resposta salva
-        if (!r.stable || !r.next) { node = null; return true; }
+        if (!r.stable || !r.next) { handoff = true; node = null; return true; }
         node = nodes.find((n) => n.id === r.next);
         continue;
       }
       if (node.type === 'action') {
         const notices = [];
-        const r = applyActions(node, sim, vars, notices);
+        const r = opts.apply ? await applyActionsOwn(node, sim, vars, notices, opts) : applyActions(node, sim, vars, notices);
         if (r === false) return false;
         if (r === 'dirty') dirty = true;
         for (const n of notices) await notice(...n);
         opts.actionAt[node.id] = new Date().toISOString();
+        passed.push(node.id);
         node = nodes.find((n) => n.id === nextOf(node));
         continue;
       }
@@ -574,7 +684,12 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       }
       if (node.type === 'delay') {
         const ms = delayNodeMs(node);
-        if (ms > opts.wait.left) return false;
+        if (ms > opts.wait.left) {
+          if (!opts.apply) return false;
+          // Atraso longo: a execução volta a esperar (o Railway retoma de novo na hora certa)
+          longDelay = { node_id: node.id, resume_at: delayResumeAt(node.data || node.config || {}), next: nextOf(node) };
+          node = null; return true;
+        }
         opts.wait.left -= ms;
         await sleep(ms);
         delays.push(node.id); executed.push(node.id);
@@ -593,23 +708,29 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   opts.actionAt = opts.actionAt || {};
   // Áudio gerado: o Base44 recebe o link em {{audio_response}}
   const voiceVars = () => opts.audio ? { variables: { ...((opts.context || {}).variables || {}), audio_response: opts.audio } } : {};
-  const partial = () => (executed.length || Object.keys(opts.api).length || Object.keys(opts.sheets).length)
-    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...voiceVars() } : null;
+  const partial = () => (executed.length || Object.keys(opts.api).length || Object.keys(opts.sheets).length || opts.apply)
+    ? withMeta({ _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...voiceVars() }, { ended: false, stopSub: null }) : null;
+  // Resultado completo (fim do fluxo, parada num botão/lista/pergunta ou atraso longo)
+  const finish = (stop) => withMeta({ _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() },
+    { ended: !stop && !node && !longDelay, stopSub: stop ? opts.stopSub || null : null });
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
   const target = jumpTarget(node);
   if (target && loadFlow && depth < 3) {
+    const jumpNode = node;
     const dest = await loadFlow(target);
     const sub = dest && await runFast(dest, firstNodeId(dest), Object.assign(opts, { contact: sim }), depth + 1);
+    if (!sub) return partial();
     // Mantém o que já passou antes do salto (atrasos, áudio, API) para o Base44 não repetir
     // Ações percorridas antes do salto não entram em "executed": o horário delas vai junto
     // para o Base44 registrar o aviso na posição certa da conversa (antes das mensagens do destino)
     const base = { ...(partial() || { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null }), _railway_action_at: opts.actionAt, _railway_started_at: startedAt };
-    return sub ? { ...base, _railway_jump: { flow_id: target, ...sub } } : partial();
+    return withMeta({ ...base, _railway_jump: { flow_id: target, ...sub } }, { ended: false, stopSub: null, jump: { node_id: jumpNode.id, mode: jumpMode(jumpNode), flow: dest, fast: sub } });
   }
   if (!isSupported(node, vars, opts.wait.left)) {
-    return partial();
+    // Retomada: nada mais a enviar (fim do fluxo depois de ações/API, ou atraso longo) — o Railway conclui
+    return !node && !handoff && opts.apply ? finish(null) : partial();
   }
   const creds = await getCreds(companyId, connectionId);
   let stop = null;
@@ -648,16 +769,18 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() };
-  // Para o Railway saber se terminou o caminho sozinho (fim do fluxo ou parada num botão/lista/pergunta).
-  // Não enumerável: não vai junto no contexto enviado ao Base44.
-  Object.defineProperty(result, '_meta', { value: { ended: !stop && !node, stopSub: stop ? opts.stopSub || null : null }, enumerable: false });
+  // _meta diz ao Railway se terminou o caminho sozinho (fim do fluxo, parada num botão/lista/pergunta, atraso longo)
+  const result = finish(stop);
   // Texto seguido de salto: já envia o começo do fluxo destino; o Base44 executa o salto e registra
   const target2 = !stop && jumpTarget(node);
   if (target2 && loadFlow && depth < 3) {
+    const jumpNode = node;
     const dest = await loadFlow(target2).catch(() => null);
     const sub = dest && await runFast(dest, firstNodeId(dest), Object.assign(opts, { contact: sim }), depth + 1).catch((e) => { console.error('[FAST] salto falhou:', e.message); return null; });
-    if (sub) result._railway_jump = { flow_id: target2, ...sub };
+    if (sub) {
+      result._railway_jump = { flow_id: target2, ...sub };
+      Object.assign(result._meta, { jump: { node_id: jumpNode.id, mode: jumpMode(jumpNode), flow: dest, fast: sub }, sim: opts.sim });
+    }
   }
   return result;
 }

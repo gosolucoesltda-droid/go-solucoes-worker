@@ -28,11 +28,10 @@ function phoneNumberIdOf(raw) {
 
 async function forward(getPool, ev) {
   const pool = getPool();
-  // Grava a mensagem no Supabase (e cria o contato novo) antes do motor procurar pelo contato
+  // Fase 2: grava a mensagem no Supabase + cópia no painel em paralelo com o motor
   const recorded = recordInbound(pool, ev).catch((e) => { console.error(`[INBOUND] gravação falhou id=${ev.id} (Base44 grava):`, e.message); return null; });
   try {
     if (engine.isPilot(ev.phone_number_id)) {
-      await recorded;
       const handled = await engine.processEvent(ev, pool).catch((e) => {
         console.error(`[ENGINE] falhou id=${ev.id}, usando Base44:`, e.message);
         return false;
@@ -42,8 +41,7 @@ async function forward(getPool, ev) {
         return;
       }
     }
-    // O Base44 só processa depois que a cópia existe (evita mensagem duplicada) e o áudio foi transcrito
-    await (await recorded)?.transcript;
+    await recorded; // o Base44 só processa depois que a cópia existe (evita mensagem duplicada)
     const res = await fetch(`${APP_URL}/functions/whatsappWebhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': ev.signature },

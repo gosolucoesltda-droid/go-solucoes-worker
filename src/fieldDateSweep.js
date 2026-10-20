@@ -133,4 +133,4 @@ function startFieldDateSweep(pool) {
   console.log('[FIELD_DATE] varredura diária de datas pelo Railway');
 }
 
-module.exports = { startFieldDateSweep, runSweep };
+module.exports = { startFieldDateSweep, runSweep, parseFieldDate, calcScheduledFor };

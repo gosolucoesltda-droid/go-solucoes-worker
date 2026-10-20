@@ -19,6 +19,7 @@ function interactiveOf(m) {
 
 function liveTimeline(pool, { companyId, connectionId, contactId, phone }) {
   const safe = (p) => p.catch((e) => console.warn('[LIVE] gravação falhou:', e.message));
+  const ids = [];
   return {
     message: (m) => {
       if (!m.wa_id) return null;
@@ -30,10 +31,16 @@ function liveTimeline(pool, { companyId, connectionId, contactId, phone }) {
           m.media_url || null, m.audio_media_id || null, m.file_name || null, m.audio_media_id ? 'audio/ogg' : null, json ? JSON.stringify(json) : null, m.at || new Date().toISOString()]
       ));
     },
-    notice: (type, content, metadata) => safe(pool.query(
-      `insert into crm_activities (id, company_id, connection_id, contact_phone, type, content, metadata, created_by, created_at) values ($1,$2,$3,$4,$5,$6,$7,'Fluxo',$8)`,
-      [newId(), companyId, connectionId, phone, type, content, JSON.stringify({ ...(metadata || {}), _live: true }), new Date().toISOString()]
-    )),
+    notice: (type, content, metadata) => {
+      const id = newId();
+      ids.push(id);
+      return safe(pool.query(
+        `insert into crm_activities (id, company_id, connection_id, contact_phone, type, content, metadata, created_by, created_at) values ($1,$2,$3,$4,$5,$6,$7,'Fluxo',$8)`,
+        [id, companyId, connectionId, phone, type, content, JSON.stringify({ ...(metadata || {}), _live: true }), new Date().toISOString()]
+      ));
+    },
+    // Avisos gravados nesta execução (o Railway os torna definitivos quando assume a execução)
+    ids,
   };
 }
 
