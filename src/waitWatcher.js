@@ -8,6 +8,7 @@
 const INTERVAL_MS = 10000;
 const { runFast } = require('./fastPath');
 const { recordFast } = require('./supabaseRecorder');
+const { liveTimeline } = require('./liveTimeline');
 
 // Continua o fluxo depois do atraso enviando direto pela Meta; o Base44 só registra e segue
 async function continueFast(pool, ex, nextId) {
@@ -19,7 +20,8 @@ async function continueFast(pool, ex, nextId) {
     if (!flow || !contact || contact.subscriber_active === false || (contact.automation_paused_until && new Date(contact.automation_paused_until) > new Date())) return null;
     const loadFlow = async (id) => (await pool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, ex.connection_id])).rows[0] || null;
-    const fast = await runFast(flow, nextId, { companyId: ex.company_id, connectionId: ex.connection_id, phone: ex.contact_phone, contact, loadFlow, context: ex.context || {} });
+    const live = liveTimeline(pool, { companyId: ex.company_id, connectionId: ex.connection_id, contactId: contact.id, phone: ex.contact_phone });
+    const fast = await runFast(flow, nextId, { companyId: ex.company_id, connectionId: ex.connection_id, phone: ex.contact_phone, contact, loadFlow, context: ex.context || {}, live });
     if (fast) console.log(`[WAIT] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) após atraso exec=${ex.id}`);
     // Só grava as mensagens: a execução continua "waiting" até o Base44 retomar e registrar
     // (marcar "running" aqui fazia o Base44 pular a retomada → fluxo travado + reenvio).
