@@ -618,7 +618,13 @@ async function processAppointmentJob(job) {
   }
 
   // Railway envia as mensagens direto pela Meta; o flowEngine registra e segue o restante
-  const fast = await fastJob(job, flowBase44Id, flow.connection_id || context.connection_id);
+  // Caminho todo do Railway: ele mesmo registra a execução (sem chamar o Base44)
+  const direct = await fastJob(job, flowBase44Id, flow.connection_id || context.connection_id);
+  if (direct?.owned) {
+    await logAutomation(job, 'sent');
+    return true;
+  }
+  const fast = direct?.fast || null;
   const result = await callBase44Function('flowEngine', {
     action: 'startFlow',
     flow_id: flowBase44Id,
