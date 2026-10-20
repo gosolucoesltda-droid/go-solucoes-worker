@@ -9,6 +9,7 @@
 // ═══════════════════════════════════════════════════════════
 const { runFast, firstNodeId, findClickedItem } = require('./fastPath');
 const { recordFast } = require('./supabaseRecorder');
+const { liveTimeline } = require('./liveTimeline');
 const { loadFacts, passesStageFilter } = require('./crmFacts');
 const { ownStart } = require('./flowOwner');
 const { resumeQuestion } = require('./questionResume');
@@ -92,7 +93,7 @@ function clickCtx(ctx, msg) {
 
 // record=false: quem chama grava (o Railway pode assumir o fluxo inteiro)
 async function tryFast(ev, pool, flow, startNodeId, contact, msg, o = {}) {
-  const { force = false, context = {}, fresh = false, record = true } = o;
+  const { force = false, context = {}, fresh = false, record = true, started = false } = o;
   const { rows: active } = force ? { rows: [] } : await pool.query(
     `select 1 from crm_flow_executions where flow_id = $1 and contact_phone = $2 and status in ('running','waiting') limit 1`,
     [flow.base44_id, msg.from]
@@ -103,7 +104,9 @@ async function tryFast(ev, pool, flow, startNodeId, contact, msg, o = {}) {
     const loadFlow = async (id) => (await pool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, contact.connection_id]
     )).rows[0] || null;
-    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow, context, fresh, windowOpen: true });
+    // live: cada aviso e mensagem aparece no chat na hora, na ordem do fluxo
+    const live = liveTimeline(pool, { companyId: contact.company_id, connectionId: contact.connection_id, contactId: contact.id, phone: msg.from });
+    const fast = await runFast(flow, startNodeId, { companyId: contact.company_id, connectionId: contact.connection_id, phone: msg.from, contact, loadFlow, context, fresh, windowOpen: true, live, started });
     let total = 0;
     for (let r = fast; r; r = r._railway_jump) total += (r._railway_messages || []).length;
     if (fast) console.log(`[ENGINE] id=${ev.id} RAILWAY ENVIOU ${total} msg(s) de "${flow.name}" em ${Date.now() - t}ms`);
@@ -135,7 +138,7 @@ async function ownClick(pool, flow, contact, msg, fast) {
 async function startFlow(ev, flow, contact, msg, pool) {
   const startNodeId = firstNodeId(flow);
   const trigger = { connection_id: contact.connection_id, message_text: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine' };
-  const fast = await tryFast(ev, pool, flow, startNodeId, contact, msg, { fresh: true, record: false });
+  const fast = await tryFast(ev, pool, flow, startNodeId, contact, msg, { fresh: true, record: false, started: true });
   // Fase 5: caminho todo do Railway → ele mesmo registra a execução; o Base44 não é chamado
   if (fast && await ownStart(pool, { flow, contact, phone: msg.from, fast, trigger })) return;
   await saveFast(pool, contact, msg, flow, fast, startNodeId);
