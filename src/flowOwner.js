@@ -5,6 +5,7 @@
 // no caminho da mensagem. O Base44 só recebe depois (sem esperar) as estatísticas do fluxo.
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
+const { claimOrInsertNotice } = require('./liveTimeline');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 
@@ -79,11 +80,18 @@ async function saveMessages(pool, contact, phone, fast, started) {
   if (started) {
     const startAt = fast._railway_started_at || msgs[0]?.at;
     const first = startAt ? new Date(new Date(startAt).getTime() - 1) : new Date();
-    await act('flow_started', started.flow.name || '', { flow_id: started.flow.base44_id, execution_id: started.executionId, source: 'automation', trigger_type: started.flow.trigger_type || null }, 'sistema', first.toISOString());
+    // Assume o aviso já gravado ao vivo (senão cria)
+    await claimOrInsertNotice(pool, {
+      company_id: contact.company_id, connection_id: contact.connection_id, contact_phone: phone, type: 'flow_started', content: started.flow.name || '',
+      metadata: { flow_id: started.flow.base44_id, execution_id: started.executionId, source: 'automation', trigger_type: started.flow.trigger_type || null },
+      created_by: 'sistema', created_at: first.toISOString(),
+    });
   }
   for (const m of msgs) {
     const json = m.list || (m.template_buttons ? { template_buttons: m.template_buttons } : m.buttons?.length ? { buttons: m.buttons } : null);
     const at = m.at || new Date().toISOString();
+    // Troca a linha provisória gravada ao vivo pela definitiva
+    if (m.wa_id) await pool.query(`delete from crm_messages where id = $1`, [`wa_${m.wa_id}`]);
     await pool.query(
       `insert into crm_messages (id, company_id, contact_id, connection_id, direction, body, status, tipo, whatsapp_message_id, media_url, media_id, file_name, mime_type, interactive_data, sent_at, created_at, is_ai_generated)
        values ($1,$2,$3,$4,'outbound',$5,'sent',$6,$7,$8,$9,$10,$11,$12,$13,now(),false)`,
