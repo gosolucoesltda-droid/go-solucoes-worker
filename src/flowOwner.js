@@ -172,7 +172,8 @@ async function ownStart(pool, { flow, contact, phone, fast, trigger, endWaiting:
     console.error('[OWNER] registro da execução falhou (Base44 assume):', e.message);
     return false;
   }
-  await saveMessages(pool, contact, phone, fast, { flow, executionId: id }).catch((e) => console.error('[OWNER] mensagens:', e.message));
+  // Clique (end) continua o fluxo que já mostrou "Fluxo iniciado": não repete o aviso
+  await saveMessages(pool, contact, phone, fast, end ? null : { flow, executionId: id }).catch((e) => console.error('[OWNER] mensagens:', e.message));
   reportStats(flow, contact.company_id, id, fast, true);
   return id;
 }
