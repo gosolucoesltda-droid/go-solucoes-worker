@@ -182,6 +182,19 @@ async function startInboundAny(ev, pool, flow, contact, msg) {
   await startFlow(ev, flow, contact, msg, pool);
 }
 
+// Clique em botão: as próximas mensagens não acionam a Resposta Padrão pelo intervalo do gatilho
+// (só ocupa a trava se ela estiver livre — não estende um intervalo já em andamento)
+async function holdDefaultReply(pool, contact, phone) {
+  const { rows } = await pool.query(
+    `select base44_id, trigger_config from flows where company_id = $1 and connection_id = $2 and status = 'active' and trigger_type = 'inbound_any'`,
+    [contact.company_id, contact.connection_id]
+  );
+  for (const flow of rows) {
+    const secs = cooldownSeconds(flow.trigger_config);
+    if (secs > 0) await claim(pool, flow, phone, secs);
+  }
+}
+
 async function startKeyword(ev, pool, flow, contact, msg) {
   if (!keywordMatches(flow.trigger_config, msg.text)) return;
   const { rows: active } = await pool.query(
@@ -214,6 +227,7 @@ async function processEvent(ev, pool) {
   }
 
   if (msg.type === 'button' || msg.type === 'interactive') {
+    await holdDefaultReply(pool, contact, msg.from).catch((e) => console.error(`[ENGINE] id=${ev.id} pausa da resposta padrão:`, e.message));
     // Fluxo aguardando o clique → o Base44 retoma (resumeFlow)
     const { rows: waiting } = await pool.query(
       `select e.current_node_id, e.context, f.nodes from crm_flow_executions e left join flows f on f.base44_id = e.flow_id
