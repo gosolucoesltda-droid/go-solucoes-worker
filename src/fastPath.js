@@ -484,6 +484,8 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   opts.vars = vars;
   let node = nodes.find((n) => n.id === startNodeId);
   opts.wait = opts.wait || { left: MAX_WAIT_MS };
+  // Horário em que este fluxo começou (avisos "Fluxo iniciado"/"Fluxo transferido" ficam antes de tudo dele)
+  const startedAt = new Date().toISOString();
   const executed = [];
   const messages = [];
   const delays = [];
@@ -564,7 +566,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   // Áudio gerado: o Base44 recebe o link em {{audio_response}}
   const voiceVars = () => opts.audio ? { variables: { ...((opts.context || {}).variables || {}), audio_response: opts.audio } } : {};
   const partial = () => (executed.length || Object.keys(opts.api).length || Object.keys(opts.sheets).length)
-    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, ...voiceVars() } : null;
+    ? { _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...voiceVars() } : null;
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
@@ -575,7 +577,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     // Mantém o que já passou antes do salto (atrasos, áudio, API) para o Base44 não repetir
     // Ações percorridas antes do salto não entram em "executed": o horário delas vai junto
     // para o Base44 registrar o aviso na posição certa da conversa (antes das mensagens do destino)
-    const base = { ...(partial() || { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null }), _railway_action_at: opts.actionAt };
+    const base = { ...(partial() || { _executed_nodes: [], _railway_messages: [], _railway_stop_node: null }), _railway_action_at: opts.actionAt, _railway_started_at: startedAt };
     return sub ? { ...base, _railway_jump: { flow_id: target, ...sub } } : partial();
   }
   if (!isSupported(node, vars, opts.wait.left)) {
@@ -618,7 +620,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     executed.push(node.id);
     if (!stop) { node = nodes.find((n) => n.id === nextOf(node)); await skipConditions(); await prefetchTemplates(node, opts); }
   }
-  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() };
+  const result = { _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() };
   // Para o Railway saber se terminou o caminho sozinho (fim do fluxo ou parada num botão/lista/pergunta).
   // Não enumerável: não vai junto no contexto enviado ao Base44.
   Object.defineProperty(result, '_meta', { value: { ended: !stop && !node, stopSub: stop ? opts.stopSub || null : null }, enumerable: false });
