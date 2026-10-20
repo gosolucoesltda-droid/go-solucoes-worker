@@ -306,19 +306,32 @@ function conditionNext(node, c) {
 // false = ação que interrompe o fluxo (fica com o Base44); 'dirty' = efeito que o Railway não prevê
 const PASS_TYPES = ['condition', 'delay', 'random', 'action', 'api_request', 'elevenlabs_audio', 'google_sheets'];
 const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_task', 'add_note', 'create_appointment', 'assign_attendant', 'appointment_status'];
-function applyActions(node, sim, vars) {
+// notices: avisos do histórico (mesmos que o Base44 registra), gravados na hora pelo Railway
+function applyActions(node, sim, vars, notices = []) {
   const actions = (node.data || node.config || {}).actions || [];
   let dirty = false;
   for (const a of actions) {
     if (!PASS_ACTIONS.includes(a.type)) return false;
     // Ação que muda funil/tarefas: aplica nos dados lidos (agendamentos: as condições seguintes ficam com o Base44)
     applyFactAction(sim._facts, a);
-    if (a.type === 'add_tag') for (const t of a.tags || []) { if (!sim.tags.includes(t)) sim.tags.push(t); }
-    if (a.type === 'remove_tag') sim.tags = sim.tags.filter((t) => !(a.tags || []).includes(t));
+    if (a.type === 'add_tag') {
+      const added = (a.tags || []).filter((t, i, all) => !sim.tags.includes(t) && all.indexOf(t) === i);
+      sim.tags.push(...added);
+      if (added.length) notices.push(['tag_added', added.join(', '), { tags: added }]);
+    }
+    if (a.type === 'remove_tag') {
+      const removed = sim.tags.filter((t) => (a.tags || []).includes(t));
+      sim.tags = sim.tags.filter((t) => !(a.tags || []).includes(t));
+      if (removed.length) notices.push(['tag_removed', removed.join(', '), { tags: removed }]);
+    }
     if (a.type === 'set_variable' && a.field_key) {
-      if (a.operation === 'set' && canRender(a.value, vars)) sim.custom_fields[a.field_key] = render(a.value, vars);
-      else if (a.operation === 'clear') sim.custom_fields[a.field_key] = '';
-      else dirty = true;
+      const old = sim.custom_fields[a.field_key] ?? null;
+      const known = (a.operation === 'set' && canRender(a.value, vars)) || a.operation === 'clear';
+      if (!known) dirty = true;
+      else {
+        sim.custom_fields[a.field_key] = a.operation === 'set' ? render(a.value, vars) : '';
+        notices.push(['field_updated', a.field_key, { field: a.field_key, old_value: old, new_value: sim.custom_fields[a.field_key] }]);
+      }
     }
     if (a.type === 'clear_variable') dirty = true;
   }
@@ -486,8 +499,15 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   opts.wait = opts.wait || { left: MAX_WAIT_MS };
   // Horário em que este fluxo começou (avisos "Fluxo iniciado"/"Fluxo transferido" ficam antes de tudo dele)
   const startedAt = new Date().toISOString();
+  // Histórico em tempo real: aviso de início (fluxo novo ou destino de salto) antes de tudo dele
+  const live = opts.live || null;
+  const notice = async (type, content, metadata) => { if (live) await live.notice(type, content, metadata); };
+  if (depth > 0 || opts.started) {
+    await notice('flow_started', flow.name || '', { flow_id: flow.base44_id, source: opts.manual ? 'manual' : 'automation', trigger_type: flow.trigger_type || null });
+  }
   const executed = [];
   const messages = [];
+  const push = async (m) => { messages.push(m); if (live) await live.message(m); };
   const delays = [];
   // Passa direto pelas condições e atrasos curtos (o Base44 reavalia as condições e pula o que já foi feito)
   opts.random = opts.random || {};
@@ -523,6 +543,12 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const r = await runApi(node, vars);
         if (!r) return false;
         opts.api[node.id] = r.saved;
+        // Campos que mudaram (valores que podem virar data ficam para o Base44 registrar)
+        for (const [k, v] of Object.entries(r.mapped || {})) {
+          const old = sim.custom_fields[k];
+          if (/^\d{10,13}$/.test(v) || String(old ?? '') === v) continue;
+          await notice('field_updated', k, { field: k, old_value: old ?? null, new_value: v });
+        }
         Object.assign(sim.custom_fields, r.mapped || {});
         // Resposta que o Base44 pode tratar diferente: ele segue daqui com a resposta salva
         if (!r.stable || !r.next) { node = null; return true; }
@@ -530,9 +556,11 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         continue;
       }
       if (node.type === 'action') {
-        const r = applyActions(node, sim, vars);
+        const notices = [];
+        const r = applyActions(node, sim, vars, notices);
         if (r === false) return false;
         if (r === 'dirty') dirty = true;
+        for (const n of notices) await notice(...n);
         opts.actionAt[node.id] = new Date().toISOString();
         node = nodes.find((n) => n.id === nextOf(node));
         continue;
@@ -591,20 +619,20 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       if (wait) { opts.wait.left -= wait; await sleep(wait); continue; }
       if (raw.type === 'template') {
         const m = await sendTemplate(creds, phone, raw, vars);
-        messages.push(m);
+        await push(m);
         // Botões de resposta: para aqui; o clique segue pelo botão do template
         if (m.template_buttons.some((b) => b.type === 'QUICK_REPLY')) { stop = node.id; opts.stopSub = raw; break; }
         continue;
       }
-      if (raw.type === 'list') { messages.push(await sendList(creds, phone, node, raw)); stop = node.id; opts.stopSub = raw; break; }
+      if (raw.type === 'list') { await push(await sendList(creds, phone, node, raw)); stop = node.id; opts.stopSub = raw; break; }
       if (raw.type === 'question') {
         // Pergunta: envia o texto e para; o Base44 registra a espera pela resposta
         const text = render(raw.question_text ?? raw.question, vars);
         const data = await metaPost(creds, 'messages', payloadFor(phone, text, []));
-        messages.push({ body: text, buttons: [], wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
+        await push({ body: text, buttons: [], wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
         stop = node.id; opts.question = node.id; opts.stopSub = raw; break;
       }
-      if (['image', 'audio', 'video', 'file'].includes(raw.type)) { messages.push(await sendMedia(creds, phone, raw, vars)); continue; }
+      if (['image', 'audio', 'video', 'file'].includes(raw.type)) { await push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };
       const buttons = buildButtons(node, sub);
       const res = await fetch(`https://graph.facebook.com/v22.0/${creds.phone_number_id}/messages`, {
@@ -614,7 +642,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
       });
       const data = await res.json();
       if (data.error) throw new Error(`Meta: ${data.error.message}`);
-      messages.push({ body: sub.content || '', buttons, wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
+      await push({ body: sub.content || '', buttons, wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
       if (buttons.some((b) => b.type !== 'url')) { stop = node.id; opts.stopSub = raw; break; }
     }
     executed.push(node.id);
