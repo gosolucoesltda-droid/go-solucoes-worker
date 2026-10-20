@@ -77,7 +77,8 @@ async function saveMessages(pool, contact, phone, fast, started) {
     [newId(), contact.company_id, contact.connection_id, phone, type, content, metadata ? JSON.stringify(metadata) : null, by, at]
   );
   if (started) {
-    const first = msgs[0]?.at ? new Date(new Date(msgs[0].at).getTime() - 1) : new Date();
+    const startAt = fast._railway_started_at || msgs[0]?.at;
+    const first = startAt ? new Date(new Date(startAt).getTime() - 1) : new Date();
     await act('flow_started', started.flow.name || '', { flow_id: started.flow.base44_id, execution_id: started.executionId, source: 'automation', trigger_type: started.flow.trigger_type || null }, 'sistema', first.toISOString());
   }
   for (const m of msgs) {
