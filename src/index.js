@@ -40,9 +40,9 @@ const TIMEOUT_CHECK_INTERVAL_MS = 60000;  // 60s — o Base44 também roda 1x/mi
 const LEASE_TIMEOUT_MS = 5 * 60 * 1000; // 5 min — jobs 'running' expiram
 const MAX_ATTEMPTS = 3;
 const BATCH_SIZE = 10;
-const PROCESSING_CONCURRENCY = 1;  // serializar — platform rate limit é agressivo, 1 por vez evita burst
-const INTER_CHUNK_DELAY_MS = 5000;  // pausa entre jobs (5s) — evita saturar o rate limit da plataforma
-const INTER_BATCH_DELAY_MS = 2000;   // pausa entre lotes quando há mais jobs
+const PROCESSING_CONCURRENCY = 10;  // lote de 10 em paralelo — o Railway envia direto (sem o limite do Base44)
+const INTER_CHUNK_DELAY_MS = 1000;  // pausa curta entre lotes dentro do mesmo ciclo
+const INTER_BATCH_DELAY_MS = 1000;   // pausa entre lotes quando há mais jobs
 const RATE_LIMIT_BACKOFF_MS = [5000, 15000, 30000];  // backoff exponencial mais longo ao bater rate limit
 const RATE_LIMIT_GLOBAL_PAUSE_MS = 60000;  // pausa global de 60s quando rate limit é detectado
 
