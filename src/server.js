@@ -28,6 +28,7 @@ const { startStaleDealsSweep } = require('./staleDealsSweep');
 const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
 const { handleCampaign } = require('./campaign');
+const { handleManualSend } = require('./manualSend');
 const { setFactsPool } = require('./crmFacts');
 const { setBotSettingsPool } = require('./botSettings');
 const { serveAudio } = require('./voiceAudio');
@@ -88,6 +89,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/flow/manual') {
     return handleManualStart(req, res, pgPool);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/message/send') {
+    return handleManualSend(req, res);
   }
 
   if (req.method === 'POST' && url.pathname === '/campaign/send') {
