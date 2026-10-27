@@ -13,7 +13,21 @@ function gerarSenha(tamanho, ativos, extras, excluidos) {
   const arr = sets.map((s) => s[randomInt(s.length)]);
   while (arr.length < tamanho) arr.push(pool[randomInt(pool.length)]);
   for (let i = arr.length - 1; i > 0; i--) { const j = randomInt(i + 1); [arr[i], arr[j]] = [arr[j], arr[i]]; }
-  return (extras ? String(extras) : '') + arr.join('');
+  return formatarExtras(extras, ativos, excl) + arr.join('');
+}
+
+// Prefixo segue as mesmas regras (maiúsculas/minúsculas/números/especiais/excluídos), sem embaralhar
+function formatarExtras(extras, ativos, excl) {
+  const on = (k) => ativos.includes(k);
+  let s = extras ? String(extras) : '';
+  if (on('maiusculas') && !on('minusculas')) s = s.toUpperCase();
+  if (on('minusculas') && !on('maiusculas')) s = s.toLowerCase();
+  return [...s].filter((c) => {
+    if (excl.has(c)) return false;
+    if (/\p{L}/u.test(c)) return on('maiusculas') || on('minusculas');
+    if (/\p{N}/u.test(c)) return on('numeros');
+    return on('especiais');
+  }).join('');
 }
 
 function generatePassword(raw) {
