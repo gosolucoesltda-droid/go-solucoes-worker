@@ -742,7 +742,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const m = await sendTemplate(creds, phone, raw, vars);
         await push(m);
         // Botões de resposta: para aqui; o clique segue pelo botão do template
-        if (m.template_buttons.some((b) => b.type === 'QUICK_REPLY')) { stop = node.id; opts.stopSub = raw; break; }
+        // ("Próximo Passo" conectado: segue já, os botões continuam clicáveis — mesma regra do Base44)
+        const goOn = !!nextOf(node) && (raw.template_buttons || []).length > 0;
+        if (!goOn && m.template_buttons.some((b) => b.type === 'QUICK_REPLY')) { stop = node.id; opts.stopSub = raw; break; }
         continue;
       }
       if (raw.type === 'list') { await push(await sendList(creds, phone, node, raw)); stop = node.id; opts.stopSub = raw; break; }
