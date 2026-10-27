@@ -239,7 +239,7 @@ async function processAi(pool, p) {
   const btn = send && send.match(/\[BOTAO:\s*([^\]|]+)\s*\|\s*(https?:\/\/[^\]]+)\s*\]/i);
   if (btn) {
     const label = btn[1].trim();
-    const vars = { contact_id: contact.id, contact_name: contact.nome, nome: contact.nome, telefone: contact.telefone, email: contact.email, empresa: contact.empresa, ...(contact.custom_fields || {}), ...mapped };
+    const vars = { contact_id: contact.id, nome: contact.nome, telefone: contact.telefone, phone: contact.telefone, bsuid: contact.bsuid, email: contact.email, empresa: contact.empresa, ...(contact.custom_fields || {}), ...mapped };
     const url = btn[2].trim().replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => String(vars[k] ?? vars[k.replace(/^(custom_fields|collected|variables)\./, '')] ?? ''));
     send = send.replace(btn[0], '').trim();
     if (label && url) {

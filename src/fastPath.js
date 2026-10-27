@@ -68,16 +68,16 @@ function contactVars(c = {}, ctx = {}) {
       if (!(nk(k) in flow)) flow[nk(k)] = v;
     }
   }
-  const pref = {};
-  for (const src of [ctx.variables || {}, ctx.collected || {}]) for (const [k, v] of Object.entries(src)) if (prim(v) && !(`var.${nk(k)}` in pref)) pref[`var.${nk(k)}`] = v;
-  for (const src of [ctx.collected || {}, c.custom_fields || {}]) for (const [k, v] of Object.entries(src)) if (prim(v) && !(`custom.${nk(k)}` in pref)) pref[`custom.${nk(k)}`] = v;
-  // Campos do contato têm prioridade (ex.: campo "Nome"); contact_name é sempre o nome principal
-  return { ...sys, nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', ...custom, ...flow, ...pref, contact_name: nome, contact_phone: c.telefone || '', contact_id: c.id || '' };
+  // Campos do contato têm prioridade (ex.: campo "Nome"); contact_name/contact_phone ficam só para uso interno
+  return { ...sys, nome, primeiro_nome: nome.split(' ')[0], email: c.email || '', empresa: c.empresa || '', telefone: c.telefone || '', phone: c.telefone || '', bsuid: c.bsuid || '', ...custom, ...flow, contact_name: nome, contact_phone: c.telefone || '', contact_id: c.id || '' };
 }
 const VAR_RE = /\{\{\s*([^}]+?)\s*\}\}/g;
 const fmtDate = (v) => { const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]|$)/); return m ? `${m[3]}/${m[2]}/${m[1]}` : String(v); };
-const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => nk(m[1]) in vars);
-const render = (s, vars) => String(s || '').replace(VAR_RE, (_, k) => fmtDate(vars[nk(k)] ?? ''));
+// Variáveis antigas removidas: não são resolvidas (o fluxo segue pelo Base44, que as mantém como texto)
+const REMOVED_VARS = new Set(['contact_name', 'contact_phone', 'contact_bsuid', 'contact_email', 'contact_empresa']);
+const isRemoved = (k) => REMOVED_VARS.has(k) || k.startsWith('custom.') || k.startsWith('var.');
+const canRender = (s, vars) => [...String(s || '').matchAll(VAR_RE)].every((m) => !isRemoved(nk(m[1])) && nk(m[1]) in vars);
+const render = (s, vars) => String(s || '').replace(VAR_RE, (m, k) => isRemoved(nk(k)) ? m : fmtDate(vars[nk(k)] ?? ''));
 
 // Atrasos curtos o Railway espera ele mesmo (limite total por execução); longos ficam com o Base44
 const MAX_WAIT_MS = 10000;
@@ -388,7 +388,7 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
     } else if (a.type === 'assign_attendant') {
       if ((a.mode || 'specific') === 'remove') { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
     } else if (a.type === 'move_funnel') {
-      const title = render(a.deal_title_template || 'Negocio - {{contact_name}}', { ...vars, contact_name: sim.nome || vars.contact_phone });
+      const title = render(a.deal_title_template || 'Negocio - {{nome}}', { ...vars, nome: sim.nome || vars.contact_phone });
       opts.records.push({ type: 'move_funnel', stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: a.value, title });
     } else if (a.type === 'create_task') {
       let due = a.due_date || null;
