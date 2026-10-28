@@ -25,7 +25,7 @@ const { startWaitWatcher } = require('./waitWatcher');
 const { startTimeoutWatcher, checkTimeoutsNow } = require('./timeoutWatcher');
 const { startFieldDateSweep } = require('./fieldDateSweep');
 const { startStaleDealsSweep } = require('./staleDealsSweep');
-const { startDealDueSweep } = require('./dealDueSweep');
+const { startDealDueSweep, requestDealDuePlan, dealDueStatus } = require('./dealDueSweep');
 const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
 const { handleCampaign } = require('./campaign');
@@ -131,6 +131,7 @@ function healthHandler(req, res) {
     pg_pool_idle: pgPool?.idleCount || 0,
     is_processing: isProcessing,
     voice_ready: !!process.env.RAILWAY_PUBLIC_DOMAIN,
+    deal_due: dealDueStatus,
     stats,
     uptime: process.uptime(),
   }));
@@ -290,7 +291,8 @@ async function connectPostgres() {
   // Debounce: cada UPDATE em scheduled_jobs gera uma notificação. Sem agrupar,
   // centenas de notificações por segundo viram centenas de ciclos + logs.
   let notifyTimer = null;
-  pgClient.on('notification', () => {
+  pgClient.on('notification', (msg) => {
+    if (msg.channel === 'deal_due_plan') { requestDealDuePlan(msg.payload); return; }
     if (notifyTimer) return;
     notifyTimer = setTimeout(() => { notifyTimer = null; scheduleProcessing(); }, 2000);
   });
@@ -307,7 +309,8 @@ async function connectPostgres() {
 
   await pgClient.connect();
   await pgClient.query(`LISTEN scheduled_jobs_notify`);
-  console.log('[PG] Conectado e escutando canal: scheduled_jobs_notify');
+  await pgClient.query(`LISTEN deal_due_plan`);
+  console.log('[PG] Conectado e escutando canais: scheduled_jobs_notify, deal_due_plan');
 }
 
 // ═══════════════════════════════════════════════════════════
