@@ -1,15 +1,15 @@
 // ═══════════════════════════════════════════════════════════
 // Vencimento de negócios — fluxos "Data de vencimento" e "Próximo vencimento do negócio".
-// Mesmo modelo do gatilho "Data e hora do contato": os disparos de hoje e amanhã ficam agendados em
-// scheduled_jobs com o horário exato (trigger_config.time, padrão 09:00, Brasília) e o processador
-// dispara na hora. O Supabase avisa por NOTIFY ('deal_due_plan', company_id) quando um negócio ou fluxo
-// de vencimento muda — a empresa é reagendada na hora (novos jobs criados, os que não valem mais cancelados).
-// Horários que já passaram não são recuperados. Reagenda tudo ao iniciar e de hora em hora (reserva).
+// Totalmente reativo: o Supabase avisa por NOTIFY ('deal_due_plan', company_id) quando um negócio ou
+// fluxo de vencimento muda, e a empresa é reagendada na hora. Cada disparo futuro fica em scheduled_jobs
+// com o horário exato (trigger_config.time, padrão 09:00, Brasília) e o processador dispara na hora.
+// Sem verificação periódica: só um reagendamento completo ao iniciar (avisos enviados com o servidor
+// fora do ar não ficam guardados pelo Postgres). Horários que já passaram não são recuperados.
 // ═══════════════════════════════════════════════════════════
 /* global module */
 const q = (pool, text, values) => pool.query({ text, values, query_timeout: 20000 });
 
-const brtDate = (offsetDays = 0) => new Date(Date.now() - 3 * 3600000 + offsetDays * 86400000).toISOString().slice(0, 10);
+const brtToday = () => new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
 const addDays = (ymd, n) => new Date(Date.parse(`${ymd}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 function normTime(t) {
   const [h, m] = String(t || '09:00').split(':');
@@ -30,17 +30,17 @@ async function planCompany(pool, companyId) {
     const cfg = flow.trigger_config || {};
     const time = normTime(cfg.time);
     const days = flow.trigger_type === 'deal_due_soon' ? Number(cfg.days_before ?? 1) : 0;
-    for (const fireDate of [brtDate(0), brtDate(1)]) {
+    // Todos os vencimentos de hoje em diante (disparo = vencimento − dias de antecedência)
+    const { rows: deals } = await q(pool,
+      `select id, contact_phone, pipeline_id, stage_id, title, left(due_date, 10) as due from crm_deals
+       where company_id = $1 and status = 'open' and left(due_date, 10) >= $2 and coalesce(contact_phone, '') <> ''`,
+      [companyId, addDays(brtToday(), days)]);
+    for (const d of deals) {
+      const fireDate = addDays(d.due, -days);
       const at = new Date(`${fireDate}T${time}:00-03:00`);
-      if (at.getTime() <= nowMs) continue;
-      const { rows: deals } = await q(pool,
-        `select id, contact_phone, pipeline_id, stage_id, title from crm_deals
-         where company_id = $1 and status = 'open' and left(due_date, 10) = $2 and coalesce(contact_phone, '') <> ''`,
-        [companyId, addDays(fireDate, days)]);
-      for (const d of deals) {
-        const phone = String(d.contact_phone).replace(/\D/g, '');
-        if (phone) desired.push({ flow, d, phone, at, time, days, ref: `deal_due_${flow.base44_id}_${d.id}_${fireDate}_${time}` });
-      }
+      const phone = String(d.contact_phone).replace(/\D/g, '');
+      if (!phone || isNaN(at) || at.getTime() <= nowMs) continue;
+      desired.push({ flow, d, phone, at, time, days, ref: `deal_due_${flow.base44_id}_${d.id}_${fireDate}_${time}` });
     }
   }
   // Pendentes futuros que não valem mais (vencimento/horário mudou, negócio fechado, fluxo pausado)
@@ -82,19 +82,14 @@ function requestDealDuePlan(companyId) {
   }, 1500));
 }
 
-async function planAll(pool) {
-  const { rows } = await q(pool,
-    `select distinct company_id from flows where status = 'active' and trigger_type in ('deal_due_date', 'deal_due_soon') and company_id is not null`);
-  rows.forEach((r) => requestDealDuePlan(r.company_id));
-}
-
 function startDealDueSweep(pool) {
   if (!pool) return;
   poolRef = pool;
-  const run = () => planAll(pool).catch((e) => { dealDueStatus.last_error = e.message; console.error('[DEAL_DUE] agenda:', e.message); });
-  run();
-  setInterval(run, 3600000);
-  console.log('[DEAL_DUE] vencimento de negócios agendado na hora exata (NOTIFY deal_due_plan)');
+  // Reagendamento único ao iniciar — depois disso, só pelos avisos do Supabase
+  q(pool, `select distinct company_id from flows where status = 'active' and trigger_type in ('deal_due_date', 'deal_due_soon') and company_id is not null`)
+    .then(({ rows }) => rows.forEach((r) => requestDealDuePlan(r.company_id)))
+    .catch((e) => { dealDueStatus.last_error = e.message; console.error('[DEAL_DUE] início:', e.message); });
+  console.log('[DEAL_DUE] vencimento de negócios só por aviso do Supabase (NOTIFY deal_due_plan)');
 }
 
 module.exports = { startDealDueSweep, requestDealDuePlan, dealDueStatus };
