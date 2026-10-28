@@ -81,7 +81,7 @@ async function recordInbound(pool, ev) {
 
   const bsuid = msg.from_user_id || value.contacts?.[0]?.user_id || '';
   await pool.query(
-    `update crm_contacts set nome = $2, ultima_mensagem = $3, ultima_mensagem_em = $4, ultima_inbound_em = $4,
+    `update crm_contacts set nome = case when coalesce(nome, '') = '' or nome = telefone then $2 else nome end, ultima_mensagem = $3, ultima_mensagem_em = $4, ultima_inbound_em = $4,
        nao_lidas = nao_lidas + 1, bsuid = coalesce(bsuid, nullif($5, '')), updated_at = now() where id = $1`,
     [contact.id, nome, fields.body, at, bsuid]
   );

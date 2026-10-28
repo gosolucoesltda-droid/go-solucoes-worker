@@ -49,7 +49,9 @@ async function recordSupabase(pool, job, results) {
   for (const r of results.filter((x) => x.wa_id && x.contact_id)) {
     await pool.query(
       `insert into crm_messages (id, company_id, contact_id, connection_id, direction, body, status, tipo, whatsapp_message_id, interactive_data, sent_at, created_at, is_ai_generated)
-       values ($1, $2, $3, $4, 'outbound', $5, 'sent', $6, $7, $8, $9, now(), false) on conflict (id) do nothing`,
+       select $1, $2, $3, $4, 'outbound', $5, 'sent', $6, $7, $8, $9, now(), false
+       where not exists (select 1 from crm_messages where whatsapp_message_id = $7)
+       on conflict (id) do nothing`,
       [`wa_${r.wa_id}`, job.company_id, r.contact_id, job.connection_id, r.body || '', job.display?.tipo || 'template', r.wa_id,
         job.display?.interactive_data ? JSON.stringify(job.display.interactive_data) : null, r.at]
     ).catch((e) => console.warn('[CAMPAIGN] Supabase:', e.message));
@@ -63,7 +65,8 @@ async function run(job, pool) {
   const flush = (done) => {
     const batch = pending; pending = [];
     const totals = { sent, failed };
-    chain = chain.then(() => Promise.all([report(job, batch, totals, done), recordSupabase(pool, job, batch)]));
+    // Grava a cópia provisória antes de registrar no Base44, que a substitui pela mensagem final (sem duplicar no chat)
+    chain = chain.then(() => recordSupabase(pool, job, batch)).then(() => report(job, batch, totals, done));
     return chain;
   };
   try {
