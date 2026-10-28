@@ -271,6 +271,7 @@ async function connectPostgres() {
       max: 10,              // máx 10 conexões concorrentes
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
+      keepAlive: true,      // detecta conexões caídas em vez de deixar queries presas
     });
     pgPool.on('error', (err) => console.error('[PG-POOL] conexão ociosa caiu:', err.message));
     console.log('[PG-POOL] pool criado (max=10 conexões)');
