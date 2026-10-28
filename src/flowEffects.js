@@ -11,6 +11,12 @@ const WORKER_SECRET = process.env.WORKER_SECRET;
 
 const newId = () => crypto.randomBytes(12).toString('hex');
 const same = (a, b) => String(a ?? '') === String(b ?? '');
+// Converte "R$ 1.234,56", "1234.56" ou "150" em número (0 se não for número)
+const parseMoney = (v) => {
+  let s = String(v ?? '').replace(/[^\d.,-]/g, '');
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  return Number(s) || 0;
+};
 const CONTACT_COLS = ['nome', 'email', 'empresa', 'telefone', 'assigned_to', 'observacoes'];
 
 // Diferença entre o contato lido e o contato depois das ações percorridas
@@ -48,7 +54,7 @@ async function saveRecord(pool, contact, phone, r) {
     } else if (!deal && r.create_if_missing) {
       await pool.query(
         `insert into crm_deals (id, company_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, created_at, updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,'open',now(),0,now(),now())`, [newId(), company, r.pipeline_id || null, r.stage_id || null, r.title, phone, Number(r.value) || 0]);
+         values ($1,$2,$3,$4,$5,$6,$7,'open',now(),0,now(),now())`, [newId(), company, r.pipeline_id || null, r.stage_id || null, r.title, phone, parseMoney(r.value)]);
     }
   } else if (r.type === 'create_task') {
     await pool.query(

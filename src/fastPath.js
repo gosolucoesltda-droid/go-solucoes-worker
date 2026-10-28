@@ -345,7 +345,7 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
   const actions = (node.data || node.config || {}).actions || [];
   const ctx = opts.context || {};
   const texts = (a) => a.type === 'set_variable' && a.operation === 'set' ? [a.value] : a.type === 'add_note' ? [a.content]
-    : a.type === 'create_task' || a.type === 'create_appointment' ? [a.title, a.description] : a.type === 'move_funnel' ? [a.deal_title_template] : [];
+    : a.type === 'create_task' || a.type === 'create_appointment' ? [a.title, a.description] : a.type === 'move_funnel' ? [a.deal_title_template, String(a.value ?? '')] : [];
   if (!actions.every((a) => PASS_ACTIONS.includes(a.type) && texts(a).every((t) => canRender(t, vars)))) return false;
   // Valores dos campos antes de mexer em qualquer coisa (se o tipo do campo não puder ser lido, o Base44 assume)
   const col = { ...(ctx.collected || {}), ...opts.collected };
@@ -389,7 +389,7 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
       if ((a.mode || 'specific') === 'remove') { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
     } else if (a.type === 'move_funnel') {
       const title = render(a.deal_title_template || 'Negocio - {{nome}}', { ...vars, nome: sim.nome || vars.contact_phone });
-      opts.records.push({ type: 'move_funnel', stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: a.value, title });
+      opts.records.push({ type: 'move_funnel', stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: render(String(a.value ?? ''), vars), title });
     } else if (a.type === 'create_task') {
       let due = a.due_date || null;
       if (a.due_date_type === 'relative' || (!a.due_date_type && a.due_date_days != null)) due = new Date(Date.now() + Number(a.due_date_days ?? 1) * 86400000).toISOString().slice(0, 10);

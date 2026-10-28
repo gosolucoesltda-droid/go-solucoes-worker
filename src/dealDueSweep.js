@@ -32,7 +32,7 @@ async function fireFlow(pool, flow, today) {
     await pool.query(
       `insert into scheduled_jobs (company_id, job_type, flow_base44_id, contact_phone, scheduled_for, status, attempts, max_attempts, reference_id, reference_type, context)
        values ($1, 'flow_trigger', $2, $3, now(), 'pending', 0, 3, $4, 'deal_due', $5)`,
-      [flow.company_id, flow.base44_id, phone, `deal_due_${flow.base44_id}_${d.id}_${today}`, JSON.stringify({
+      [flow.company_id, flow.base44_id, phone, `deal_due_${flow.base44_id}_${d.id}_${today}_${time}`, JSON.stringify({
         trigger_type: flow.trigger_type, company_id: flow.company_id, contact_phone: phone, deal_id: d.id,
         pipeline_id: d.pipeline_id, stage_id: d.stage_id, deal_title: d.title, days_before: days, due_time: time,
         connection_id: flow.connection_id || null, source: 'railway_deal_due',
@@ -53,7 +53,9 @@ async function tick(pool) {
     try {
       const diff = nowMin - toMinutes(flow.trigger_config?.time);
       if (diff < 0 || diff >= CATCH_UP_MIN) continue;
-      const { rows: [claim] } = await pool.query(`select claim_flow_trigger($1, $2, $3) as won`, [`deal_due:${flow.base44_id}`, today, 20 * 3600]);
+      // Trava por fluxo + horário + dia: mudar o horário no mesmo dia permite um novo disparo
+      const time = flow.trigger_config?.time || '09:00';
+      const { rows: [claim] } = await pool.query(`select claim_flow_trigger($1, $2, $3) as won`, [`deal_due:${flow.base44_id}:${time}`, today, 20 * 3600]);
       if (!claim?.won) continue;
       await fireFlow(pool, flow, today);
     } catch (e) { console.error('[DEAL_DUE] fluxo:', flow.base44_id, e.message); }
