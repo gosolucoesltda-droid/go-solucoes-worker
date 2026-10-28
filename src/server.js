@@ -262,18 +262,21 @@ async function connectPostgres() {
   // simultaneamente. Um único Client não suporta queries concorrentes (gera
   // DeprecationWarning no pg@8 e vai falhar no pg@9). O Pool gerencia múltiplas
   // conexões e distribui as queries.
-  if (pgPool) {
-    try { await pgPool.end(); } catch {}
+  // O pool é criado uma única vez: as rotinas (vencimento, datas, esperas…) guardam
+  // esta referência ao iniciar. Recriá-lo na reconexão do LISTEN deixava todas elas
+  // presas num pool encerrado, falhando em silêncio. O pool se reconecta sozinho.
+  if (!pgPool) {
+    pgPool = new Pool({
+      connectionString: SUPABASE_DB_URL,
+      max: 10,              // máx 10 conexões concorrentes
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    });
+    pgPool.on('error', (err) => console.error('[PG-POOL] conexão ociosa caiu:', err.message));
+    console.log('[PG-POOL] pool criado (max=10 conexões)');
+    setFactsPool(pgPool);
+    setBotSettingsPool(pgPool);
   }
-  pgPool = new Pool({
-    connectionString: SUPABASE_DB_URL,
-    max: 10,              // máx 10 conexões concorrentes
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
-  });
-  console.log('[PG-POOL] pool criado (max=10 conexões)');
-  setFactsPool(pgPool);
-  setBotSettingsPool(pgPool);
 
   // ── Cliente dedicado para LISTEN/NOTIFY ──
   // LISTEN precisa de uma conexão persistente exclusiva — não pode usar o Pool.
