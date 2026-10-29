@@ -30,11 +30,12 @@ async function planCompany(pool, companyId) {
     const cfg = flow.trigger_config || {};
     const time = normTime(cfg.time);
     const days = flow.trigger_type === 'deal_due_soon' ? Number(cfg.days_before ?? 1) : 0;
-    // Todos os vencimentos de hoje em diante (disparo = vencimento − dias de antecedência)
+    // Todos os vencimentos de hoje em diante (disparo = vencimento − dias de antecedência).
+    // Só negócios do mesmo bot do fluxo — cada bot envia apenas para os próprios negócios.
     const { rows: deals } = await q(pool,
       `select id, contact_phone, pipeline_id, stage_id, title, left(due_date, 10) as due from crm_deals
-       where company_id = $1 and status = 'open' and left(due_date, 10) >= $2 and coalesce(contact_phone, '') <> ''`,
-      [companyId, addDays(brtToday(), days)]);
+       where company_id = $1 and connection_id = $3 and status = 'open' and left(due_date, 10) >= $2 and coalesce(contact_phone, '') <> ''`,
+      [companyId, addDays(brtToday(), days), flow.connection_id]);
     for (const d of deals) {
       const fireDate = addDays(d.due, -days);
       const at = new Date(`${fireDate}T${time}:00-03:00`);

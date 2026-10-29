@@ -19,6 +19,7 @@ const http = require('http');
 const { Client, Pool } = require('pg');
 const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
+const { withDealVars } = require('./dealVars');
 const { liveTimeline } = require('./liveTimeline');
 const { ownStart } = require('./flowOwner');
 const { startWaitWatcher } = require('./waitWatcher');
@@ -527,7 +528,9 @@ async function fastJob(job, flowId, connectionId) {
 }
 
 async function processFlowTriggerJob(job) {
-  const context = job.context || {};
+  // Negócio do disparo lido na hora do envio ({{deal_nome}}, {{deal_date}}, {{deal_datetime}}…)
+  job.context = await withDealVars(pgPool, job.context || {});
+  const context = job.context;
   const flowBase44Id = job.flow_base44_id;
 
   // ── Delay resume: pular verificação de status/filtros ──
