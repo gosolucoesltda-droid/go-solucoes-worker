@@ -8,6 +8,7 @@
 const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts');
 const { loadDealVars, usesDealVars } = require('./dealVars');
 const { dealDue } = require('./dealDue');
+const { DEAL_FIELD_KEYS, dealPatch, applyDealVars } = require('./dealFieldMap');
 const { loadCreds } = require('./botSettings');
 const { generateVoice } = require('./voiceAudio');
 const { runSheetsBlock } = require('./googleSheets');
@@ -442,18 +443,20 @@ async function runApi(node, vars) {
     const res = await fetch(url, opts);
     const text = await res.text();
     let json = null; try { json = JSON.parse(text); } catch {}
-    let stable = true; const mapped = {};
+    let stable = true; const mapped = {}; const deal = {};
     for (const m of cfg.response_mapping || []) {
       if (!m.response_path || !m.field_key) continue;
       let v = json;
       for (const k of m.response_path.split('.')) v = v && typeof v === 'object' ? v[k] : undefined;
       if (v === undefined) continue;
+      // Variáveis do Funil: vão para o negócio, não para o contato
+      if (DEAL_FIELD_KEYS.includes(m.field_key)) { deal[m.field_key] = String(v); continue; }
       if (/^\d{10,13}$/.test(String(v))) stable = false; // pode virar data no Base44
       vars[nk(m.field_key)] = String(v); mapped[m.field_key] = String(v);
     }
     if (cfg.save_status_to) vars[nk(cfg.save_status_to)] = String(res.status);
     // "at": horário da requisição, para o aviso de campo atualizado ficar na posição certa da conversa
-    return { mapped, saved: { ok: res.ok, status: res.status, text, at: new Date().toISOString() }, next: res.ok ? nextOf(node) : nextErr, stable: stable && (res.ok || !!nextErr) };
+    return { mapped, deal: dealPatch(deal), saved: { ok: res.ok, status: res.status, text, at: new Date().toISOString() }, next: res.ok ? nextOf(node) : nextErr, stable: stable && (res.ok || !!nextErr) };
   } catch (e) {
     return { saved: { error: e.message }, next: nextErr, stable: false };
   }
@@ -638,6 +641,11 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const r = await runApi(node, vars);
         if (!r) return false;
         opts.api[node.id] = r.saved;
+        // Variáveis do Funil: valem já nas mensagens seguintes; na retomada o Railway grava no negócio
+        if (Object.keys(r.deal || {}).length) {
+          applyDealVars(vars, r.deal);
+          if (opts.apply) opts.records.push({ type: 'deal_fields', patch: r.deal, deal_id: opts.context?.deal_id || null });
+        }
         if (opts.apply) {
           // Mesma conversão de datas do Base44 (o Railway grava os campos depois)
           const cfg = { ...(node.config || {}), ...(node.data || {}) };

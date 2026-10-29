@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
 const { parseFieldDate, calcScheduledFor } = require('./fieldDateSweep');
+const { saveDealFields } = require('./dealFieldMap');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 
@@ -46,6 +47,7 @@ async function saveContact(pool, contact, d) {
 // Negócio, tarefa, nota e agendamento (mesmos campos que o Base44 grava)
 async function saveRecord(pool, contact, phone, r) {
   const company = contact.company_id;
+  if (r.type === 'deal_fields') return saveDealFields(pool, contact, phone, r);
   if (r.type === 'move_funnel') {
     const { rows: [deal] } = await pool.query(
       `select id, stage_id from crm_deals where company_id = $1 and contact_phone = $2 and status = 'open' order by created_at desc limit 1`, [company, phone]);
