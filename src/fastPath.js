@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════
 const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts');
 const { loadDealVars, usesDealVars } = require('./dealVars');
+const { dealDue } = require('./dealDue');
 const { loadCreds } = require('./botSettings');
 const { generateVoice } = require('./voiceAudio');
 const { runSheetsBlock } = require('./googleSheets');
@@ -390,11 +391,7 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
       if ((a.mode || 'specific') === 'remove') { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
     } else if (a.type === 'move_funnel') {
       const title = render(a.deal_title_template || 'Negocio - {{nome}}', { ...vars, nome: sim.nome || vars.contact_phone });
-      // Vencimento: X dias após a criação (data de Brasília), com hora opcional
-      const hasDue = a.due_mode === 'date' || a.due_mode === 'datetime';
-      const due_date = hasDue ? new Date(Date.now() - 3 * 3600000 + Number(a.due_days ?? 1) * 86400000).toISOString().slice(0, 10) : null;
-      const due_time = a.due_mode === 'datetime' ? (a.due_time || '09:00') : null;
-      opts.records.push({ type: 'move_funnel', stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: render(String(a.value ?? ''), vars), title, due_date, due_time });
+      opts.records.push({ type: 'move_funnel', stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: render(String(a.value ?? ''), vars), title, ...dealDue(a, (s) => render(s, vars)) });
     } else if (a.type === 'create_task') {
       let due = a.due_date || null;
       if (a.due_date_type === 'relative' || (!a.due_date_type && a.due_date_days != null)) due = new Date(Date.now() + Number(a.due_date_days ?? 1) * 86400000).toISOString().slice(0, 10);
