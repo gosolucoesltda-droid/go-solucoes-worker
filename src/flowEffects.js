@@ -53,8 +53,8 @@ async function saveRecord(pool, contact, phone, r) {
       await pool.query(`update crm_deals set stage_id = $2, stage_entered_at = now(), updated_at = now() where id = $1`, [deal.id, r.stage_id]);
     } else if (!deal && r.create_if_missing) {
       await pool.query(
-        `insert into crm_deals (id, company_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, created_at, updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,'open',now(),0,now(),now())`, [newId(), company, r.pipeline_id || null, r.stage_id || null, r.title, phone, parseMoney(r.value)]);
+        `insert into crm_deals (id, company_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, due_date, due_time, created_at, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,'open',now(),0,$8,$9,now(),now())`, [newId(), company, r.pipeline_id || null, r.stage_id || null, r.title, phone, parseMoney(r.value), r.due_date || null, r.due_time || null]);
     }
   } else if (r.type === 'create_task') {
     await pool.query(
