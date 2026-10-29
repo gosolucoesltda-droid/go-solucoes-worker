@@ -39,7 +39,7 @@ async function sendOne(pool, auto, deal, company) {
     [auto.company_id, deal.contact_phone, digits, deal.connection_id || '']);
   const ctx = {
     contact_name: contact?.nome || deal.contact_phone, contact_phone: deal.contact_phone, company_name: company.name || '',
-    deal_title: deal.title || '', deal_value: 'R$ ' + (Number(deal.value) || 0).toFixed(2), responsible: deal.responsible || '',
+    deal_title: deal.title || '', deal_value: String(Number(deal.value) || 0), responsible: deal.responsible || '',
     stage_name: auto.stage_name || '', pipeline_name: auto.pipeline_name || '',
   };
   const params = templateParams(auto, ctx);

@@ -41,7 +41,7 @@ function dealPatch(mapped) {
 
 function applyDealVars(t, p) {
   if ('title' in p) { t.deal_nome = p.title; t.deal_title = p.title; }
-  if ('value' in p) t.deal_value = 'R$ ' + Number(p.value).toFixed(2);
+  if ('value' in p) t.deal_value = String(Number(p.value) || 0);
   if (p.due_date) {
     const [y, m, d] = p.due_date.split('-');
     const date = `${d}/${m}/${y}`;

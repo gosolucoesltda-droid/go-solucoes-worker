@@ -14,7 +14,7 @@ function dealVars(deal) {
   return {
     deal_nome: deal.title || '',
     deal_title: deal.title || '',
-    deal_value: 'R$ ' + (Number(deal.value) || 0).toFixed(2),
+    deal_value: String(Number(deal.value) || 0),
     deal_date: date,
     deal_datetime: date && time ? `${date} ${time}` : date,
     deal_stage: deal.stage_name || '',
