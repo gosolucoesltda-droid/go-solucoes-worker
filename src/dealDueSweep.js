@@ -16,6 +16,21 @@ function normTime(t) {
   return `${String(Number(h) || 0).padStart(2, '0')}:${String(Number(m) || 0).padStart(2, '0')}`;
 }
 
+// "Data de vencimento": antes/depois/no mesmo dia do vencimento, no horário do negócio (se tiver) ou fixo
+// (mesma regra do gatilho de data do campo do contato). Configuração antiga (só "time") = no dia, horário fixo.
+const UNIT_MS = { minutes: 60000, hours: 3600000, days: 86400000 };
+const offsetMs = (cfg) => (Number(cfg.offset_value) || 0) * (UNIT_MS[cfg.offset_unit] || 86400000);
+function dueFireAt(d, cfg) {
+  const dueTime = /^\d{1,2}:\d{2}/.test(d.due_time || '') ? normTime(d.due_time) : null;
+  const base = Date.parse(`${d.due}T${dueTime || '00:00'}:00-03:00`);
+  const dir = cfg.offset_direction || 'same_day';
+  const off = dir === 'same_day' ? 0 : offsetMs(cfg);
+  const target = dir === 'before' ? base - off : base + off;
+  if (cfg.time_mode === 'field_time' && dueTime) return new Date(target);
+  const day = new Date(target - 3 * 3600000).toISOString().slice(0, 10);
+  return new Date(`${day}T${normTime(cfg.fixed_time || cfg.time)}:00-03:00`);
+}
+
 const dealDueStatus = { last_plan_at: null, last_error: null, jobs_created: 0, jobs_cancelled: 0 };
 let poolRef = null;
 
@@ -29,19 +44,20 @@ async function planCompany(pool, companyId) {
   for (const flow of flows) {
     const cfg = flow.trigger_config || {};
     const time = normTime(cfg.time);
-    const days = flow.trigger_type === 'deal_due_soon' ? Number(cfg.days_before ?? 1) : 0;
-    // Todos os vencimentos de hoje em diante (disparo = vencimento − dias de antecedência).
+    const isDue = flow.trigger_type === 'deal_due_date';
+    const days = isDue ? 0 : Number(cfg.days_before ?? 1);
+    // "Depois do vencimento": inclui vencimentos que já passaram dentro da correção
+    const back = isDue && cfg.offset_direction === 'after' ? Math.ceil(offsetMs(cfg) / 86400000) + 1 : 0;
     // Só negócios do mesmo bot do fluxo — cada bot envia apenas para os próprios negócios.
     const { rows: deals } = await q(pool,
-      `select id, contact_phone, pipeline_id, stage_id, title, left(due_date, 10) as due from crm_deals
+      `select id, contact_phone, pipeline_id, stage_id, title, left(due_date, 10) as due, due_time from crm_deals
        where company_id = $1 and connection_id = $3 and status = 'open' and left(due_date, 10) >= $2 and coalesce(contact_phone, '') <> ''`,
-      [companyId, addDays(brtToday(), days), flow.connection_id]);
+      [companyId, addDays(brtToday(), days - back), flow.connection_id]);
     for (const d of deals) {
-      const fireDate = addDays(d.due, -days);
-      const at = new Date(`${fireDate}T${time}:00-03:00`);
+      const at = isDue ? dueFireAt(d, cfg) : new Date(`${addDays(d.due, -days)}T${time}:00-03:00`);
       const phone = String(d.contact_phone).replace(/\D/g, '');
       if (!phone || isNaN(at) || at.getTime() <= nowMs) continue;
-      desired.push({ flow, d, phone, at, time, days, ref: `deal_due_${flow.base44_id}_${d.id}_${fireDate}_${time}` });
+      desired.push({ flow, d, phone, at, time, days, ref: `deal_due_${flow.base44_id}_${d.id}_${at.toISOString()}` });
     }
   }
   // Pendentes futuros que não valem mais (vencimento/horário mudou, negócio fechado, fluxo pausado)
