@@ -13,7 +13,7 @@ function dealDue(a, render) {
   if (m && m[4]) time = `${m[4].padStart(2, '0')}:${m[5]}`;
   if (v && !base) return { due_date: null, due_time: null }; // variável sem data válida
   if (!base) base = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
-  const date = new Date(new Date(`${base}T12:00:00Z`).getTime() + (Number(a.due_days) || 0) * 86400000).toISOString().slice(0, 10);
+  const date = new Date(new Date(`${base}T12:00:00Z`).getTime() + (a.due_add_days ? Number(a.due_days) || 0 : 0) * 86400000).toISOString().slice(0, 10);
   return { due_date: date, due_time: a.due_mode === 'datetime' ? (time || a.due_time || '09:00') : null };
 }
 
