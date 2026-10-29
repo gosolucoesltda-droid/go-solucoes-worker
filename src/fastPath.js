@@ -6,6 +6,7 @@
 // continuar o restante do fluxo.
 // ═══════════════════════════════════════════════════════════
 const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts');
+const { loadDealVars, usesDealVars } = require('./dealVars');
 const { loadCreds } = require('./botSettings');
 const { generateVoice } = require('./voiceAudio');
 const { runSheetsBlock } = require('./googleSheets');
@@ -569,6 +570,11 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const { companyId, connectionId, phone, contact, loadFlow } = opts;
   const nodes = flow.nodes || [];
   const vars = contactVars({ telefone: phone, ...(contact || {}) }, opts.context || {});
+  // Variáveis do negócio ({{deal_nome}}, {{deal_stage}}…) em qualquer gatilho, inclusive manual
+  if (opts.dealVars === undefined && usesDealVars(flow)) {
+    opts.dealVars = await loadDealVars(null, { dealId: opts.context?.deal_id, companyId, connectionId, phone });
+  }
+  if (opts.dealVars) Object.assign(vars, opts.dealVars);
   opts.vars = vars;
   let node = nodes.find((n) => n.id === startNodeId);
   opts.wait = opts.wait || { left: MAX_WAIT_MS };

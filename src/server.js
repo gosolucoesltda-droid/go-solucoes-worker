@@ -19,7 +19,7 @@ const http = require('http');
 const { Client, Pool } = require('pg');
 const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
-const { withDealVars } = require('./dealVars');
+const { withDealVars, setDealVarsPool } = require('./dealVars');
 const { liveTimeline } = require('./liveTimeline');
 const { ownStart } = require('./flowOwner');
 const { startWaitWatcher } = require('./waitWatcher');
@@ -278,6 +278,7 @@ async function connectPostgres() {
     pgPool.on('error', (err) => console.error('[PG-POOL] conexão ociosa caiu:', err.message));
     console.log('[PG-POOL] pool criado (max=10 conexões)');
     setFactsPool(pgPool);
+    setDealVarsPool(pgPool);
     setBotSettingsPool(pgPool);
   }
 
