@@ -51,7 +51,8 @@ async function saveRecord(pool, contact, phone, r) {
   if (r.type === 'deal_fields') return saveDealFields(pool, contact, phone, r);
   if (r.type === 'move_funnel') {
     const { rows: [deal] } = await pool.query(
-      `select id, stage_id from crm_deals where company_id = $1 and contact_phone = $2 and status = 'open' order by created_at desc limit 1`, [company, phone]);
+      `select id, stage_id from crm_deals where company_id = $1 and contact_phone = $2 and status = 'open' and ($3::text is null or pipeline_id = $3)
+       order by created_at desc limit 1`, [company, phone, r.pipeline_id || null]);
     if (deal && deal.stage_id !== r.stage_id) {
       await pool.query(`update crm_deals set stage_id = $2, stage_entered_at = now(), updated_at = now() where id = $1`, [deal.id, r.stage_id]);
       // Aviso no chat: {{deal_stage}} mudou
@@ -59,8 +60,8 @@ async function saveRecord(pool, contact, phone, r) {
       await logDealChanges(pool, { companyId: company, connectionId: contact.connection_id, phone, at: r.at }, { stage_name: from }, { stage_name: to });
     } else if (!deal && r.create_if_missing) {
       await pool.query(
-        `insert into crm_deals (id, company_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, due_date, due_time, created_at, updated_at)
-         values ($1,$2,$3,$4,$5,$6,$7,'open',now(),0,$8,$9,now(),now())`, [newId(), company, r.pipeline_id || null, r.stage_id || null, r.title, phone, parseMoney(r.value), r.due_date || null, r.due_time || null]);
+        `insert into crm_deals (id, company_id, connection_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, due_date, due_time, created_at, updated_at)
+         values ($1,$2,$10,$3,$4,$5,$6,$7,'open',now(),0,$8,$9,now(),now())`, [newId(), company, r.pipeline_id || null, r.stage_id || null, r.title, phone, parseMoney(r.value), r.due_date || null, r.due_time || null, contact.connection_id || null]);
     }
   } else if (r.type === 'create_task') {
     await pool.query(
