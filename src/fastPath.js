@@ -644,7 +644,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         opts.api[node.id] = r.saved;
         // Variáveis do Funil: valem já nas mensagens seguintes; na retomada o Railway grava no negócio
         if (Object.keys(r.deal || {}).length) {
-          await applyDealPatch(opts, vars, r.deal);
+          await applyDealPatch(opts, vars, r.deal, notice);
           if (opts.apply) opts.records.push({ type: 'deal_fields', patch: r.deal, deal_id: opts.context?.deal_id || null, at: r.saved.at });
         }
         if (opts.apply) {
@@ -685,7 +685,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const r = opts.apply ? await applyActionsOwn(node, sim, vars, notices, opts) : applyActions(node, sim, vars, notices);
         if (r === false) return false;
         if (r === 'dirty') dirty = true;
-        await applyMoveFunnel(node, vars, opts, (s) => render(s, vars));
+        await applyMoveFunnel(node, vars, opts, (s) => render(s, vars), notice);
         for (const n of notices) await notice(...n);
         opts.actionAt[node.id] = new Date().toISOString();
         passed.push(node.id);
