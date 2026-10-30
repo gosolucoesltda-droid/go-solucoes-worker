@@ -8,7 +8,8 @@
 const { needsFacts, loadFacts, evalFact, applyFactAction } = require('./crmFacts');
 const { loadDealVars, usesDealVars } = require('./dealVars');
 const { dealDue } = require('./dealDue');
-const { DEAL_FIELD_KEYS, dealPatch, applyDealVars } = require('./dealFieldMap');
+const { DEAL_FIELD_KEYS, dealPatch } = require('./dealFieldMap');
+const { applyDealPatch, applyMoveFunnel } = require('./dealLive');
 const { loadCreds } = require('./botSettings');
 const { generateVoice } = require('./voiceAudio');
 const { runSheetsBlock } = require('./googleSheets');
@@ -392,7 +393,7 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
       if ((a.mode || 'specific') === 'remove') { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
     } else if (a.type === 'move_funnel') {
       const title = render(a.deal_title_template || 'Negocio - {{nome}}', { ...vars, nome: sim.nome || vars.contact_phone });
-      opts.records.push({ type: 'move_funnel', stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: render(String(a.value ?? ''), vars), title, ...dealDue(a, (s) => render(s, vars)) });
+      opts.records.push({ type: 'move_funnel', at, stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: render(String(a.value ?? ''), vars), title, ...dealDue(a, (s) => render(s, vars)) });
     } else if (a.type === 'create_task') {
       let due = a.due_date || null;
       if (a.due_date_type === 'relative' || (!a.due_date_type && a.due_date_days != null)) due = new Date(Date.now() + Number(a.due_date_days ?? 1) * 86400000).toISOString().slice(0, 10);
@@ -643,8 +644,8 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         opts.api[node.id] = r.saved;
         // Variáveis do Funil: valem já nas mensagens seguintes; na retomada o Railway grava no negócio
         if (Object.keys(r.deal || {}).length) {
-          applyDealVars(vars, r.deal);
-          if (opts.apply) opts.records.push({ type: 'deal_fields', patch: r.deal, deal_id: opts.context?.deal_id || null });
+          await applyDealPatch(opts, vars, r.deal);
+          if (opts.apply) opts.records.push({ type: 'deal_fields', patch: r.deal, deal_id: opts.context?.deal_id || null, at: r.saved.at });
         }
         if (opts.apply) {
           // Mesma conversão de datas do Base44 (o Railway grava os campos depois)
@@ -684,6 +685,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const r = opts.apply ? await applyActionsOwn(node, sim, vars, notices, opts) : applyActions(node, sim, vars, notices);
         if (r === false) return false;
         if (r === 'dirty') dirty = true;
+        await applyMoveFunnel(node, vars, opts, (s) => render(s, vars));
         for (const n of notices) await notice(...n);
         opts.actionAt[node.id] = new Date().toISOString();
         passed.push(node.id);

@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const { parseFieldDate, calcScheduledFor } = require('./fieldDateSweep');
 const { saveDealFields } = require('./dealFieldMap');
+const { logDealChanges, stageNameOf } = require('./dealNotices');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 
@@ -53,6 +54,9 @@ async function saveRecord(pool, contact, phone, r) {
       `select id, stage_id from crm_deals where company_id = $1 and contact_phone = $2 and status = 'open' order by created_at desc limit 1`, [company, phone]);
     if (deal && deal.stage_id !== r.stage_id) {
       await pool.query(`update crm_deals set stage_id = $2, stage_entered_at = now(), updated_at = now() where id = $1`, [deal.id, r.stage_id]);
+      // Aviso no chat: {{deal_stage}} mudou
+      const [from, to] = await Promise.all([stageNameOf(pool, deal.stage_id), stageNameOf(pool, r.stage_id)]);
+      await logDealChanges(pool, { companyId: company, connectionId: contact.connection_id, phone, at: r.at }, { stage_name: from }, { stage_name: to });
     } else if (!deal && r.create_if_missing) {
       await pool.query(
         `insert into crm_deals (id, company_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, due_date, due_time, created_at, updated_at)

@@ -20,6 +20,7 @@ const { Client, Pool } = require('pg');
 const { handleWebhook, startWebhookRetries } = require('./webhookGateway');
 const { runFast, firstNodeId } = require('./fastPath');
 const { withDealVars, setDealVarsPool } = require('./dealVars');
+const { setDealLivePool } = require('./dealLive');
 const { liveTimeline } = require('./liveTimeline');
 const { ownStart } = require('./flowOwner');
 const { startWaitWatcher } = require('./waitWatcher');
@@ -279,6 +280,7 @@ async function connectPostgres() {
     console.log('[PG-POOL] pool criado (max=10 conexões)');
     setFactsPool(pgPool);
     setDealVarsPool(pgPool);
+    setDealLivePool(pgPool);
     setBotSettingsPool(pgPool);
   }
 

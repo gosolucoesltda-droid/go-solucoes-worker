@@ -1,6 +1,7 @@
 // Requisição de API → variáveis do negócio (Funil): {{deal_nome}}, {{deal_value}}, {{deal_date}}, {{deal_datetime}}.
 // Mesma regra do Base44: base44/shared/dealFieldMap.ts
 /* global module */
+const { logDealChanges } = require('./dealNotices');
 const DEAL_FIELD_KEYS = ['deal_nome', 'deal_value', 'deal_date', 'deal_datetime'];
 
 function parseMoney(v) {
@@ -55,17 +56,18 @@ function applyDealVars(t, p) {
 async function saveDealFields(pool, contact, phone, r) {
   const cols = Object.keys(r.patch || {}).filter((k) => ['title', 'value', 'due_date', 'due_time'].includes(k));
   if (!cols.length) return;
-  let id = r.deal_id || null;
-  if (!id) {
-    const { rows: [deal] } = await pool.query(
-      `select id from crm_deals where company_id = $1 and contact_phone = $2 and coalesce(status, 'open') = 'open'
+  const { rows: [deal] } = r.deal_id
+    ? await pool.query('select id, title, value, due_date, due_time from crm_deals where id = $1', [r.deal_id])
+    : await pool.query(
+      `select id, title, value, due_date, due_time from crm_deals where company_id = $1 and contact_phone = $2 and coalesce(status, 'open') = 'open'
          and (connection_id is null or connection_id = $3::text)
        order by (connection_id = $3::text) desc nulls last, updated_at desc nulls last limit 1`,
       [contact.company_id, phone, contact.connection_id || null]);
-    id = deal?.id;
-  }
-  if (!id) return;
-  await pool.query(`update crm_deals set ${cols.map((c, i) => `${c} = $${i + 2}`).join(', ')}, updated_at = now() where id = $1`, [id, ...cols.map((c) => r.patch[c])]);
+  if (!deal) return;
+  await pool.query(`update crm_deals set ${cols.map((c, i) => `${c} = $${i + 2}`).join(', ')}, updated_at = now() where id = $1`, [deal.id, ...cols.map((c) => r.patch[c])]);
+  // Aviso no chat das variáveis do Funil que mudaram
+  await logDealChanges(pool, { companyId: contact.company_id, connectionId: contact.connection_id, phone, at: r.at }, deal, { ...deal, ...r.patch })
+    .catch((e) => console.error('[DEAL_FIELDS] aviso falhou:', e.message));
 }
 
-module.exports = { DEAL_FIELD_KEYS, dealPatch, applyDealVars, saveDealFields };
+module.exports = { DEAL_FIELD_KEYS, dealPatch, applyDealVars, saveDealFields, parseMoney };
