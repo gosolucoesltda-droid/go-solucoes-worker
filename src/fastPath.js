@@ -14,6 +14,7 @@ const { loadCreds } = require('./botSettings');
 const { generateVoice } = require('./voiceAudio');
 const { runSheetsBlock } = require('./googleSheets');
 const { fieldValue, delayResumeAt } = require('./flowDates');
+const { normText } = require('./textNorm');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const CREDS_TTL_MS = 10 * 60 * 1000;
@@ -231,8 +232,8 @@ function jumpTarget(node) {
 
 // Condição (mesma regra do Base44): devolve o próximo nó, ou undefined se o Railway não sabe avaliar
 function compareText(actual, op, value) {
-  const a = String(actual || '').toLowerCase();
-  const v = String(value || '').toLowerCase();
+  const a = normText(actual);
+  const v = normText(value);
   switch (op) {
     case 'equals': return a === v;
     case 'not_equals': return a !== v;
@@ -265,7 +266,7 @@ function evalFilter(f, c) {
       const matches = (Array.isArray(value) ? value : [value]).some((v) => DAYS[v] === today);
       return op === 'is' ? matches : !matches;
     }
-    case 'tag': { const tags = c.tags || []; return op === 'has_tag' || op === 'is' ? tags.includes(value) : !tags.includes(value); }
+    case 'tag': { const has = (c.tags || []).map(normText).includes(normText(value)); return op === 'has_tag' || op === 'is' ? has : !has; }
     case 'nome': case 'contact_name': return compareText(c.nome, op, value);
     case 'email': case 'contact_email': return compareText(c.email, op, value);
     case 'telefone': case 'contact_phone': return compareText(c.telefone, op, value);
@@ -310,7 +311,15 @@ function conditionNext(node, c) {
 // Ação: o Base44 grava (tags, campos, tarefas, funil); o Railway só passa por ela e segue enviando.
 // false = ação que interrompe o fluxo (fica com o Base44); 'dirty' = efeito que o Railway não prevê
 const PASS_TYPES = ['condition', 'delay', 'random', 'action', 'api_request', 'elevenlabs_audio', 'google_sheets'];
-const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_task', 'add_note', 'create_appointment', 'assign_attendant', 'appointment_status'];
+const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_deal', 'edit_deal', 'create_task', 'add_note', 'create_appointment', 'assign_attendant', 'appointment_status'];
+// Textos que a ação renderiza com variáveis (se o Railway não souber renderizar, o Base44 assume)
+const actionTexts = (a) => a.type === 'set_variable' && a.operation === 'set' ? [a.value] : a.type === 'add_note' ? [a.content]
+  : a.type === 'create_task' || a.type === 'create_appointment' ? [a.title, a.description]
+  : a.type === 'move_funnel' ? [a.deal_title_template, String(a.value ?? '')]
+  : a.type === 'create_deal' || a.type === 'edit_deal' ? [a.title_template, String(a.value ?? '')] : [];
+// Nome do negócio: campo vazio ou com o padrão antigo ("Negócio - {{nome}}") vira "Novo negócio"
+const DEAL_TITLE_LEGACY = /^neg[oó]cio\s*-\s*\{\{nome\}\}$/i;
+const dealTitle = (tpl) => (!tpl || DEAL_TITLE_LEGACY.test(String(tpl).trim()) ? 'Novo negócio' : tpl);
 // notices: avisos do histórico (mesmos que o Base44 registra), gravados na hora pelo Railway
 function applyActions(node, sim, vars, notices = []) {
   const actions = (node.data || node.config || {}).actions || [];
@@ -348,9 +357,7 @@ function applyActions(node, sim, vars, notices = []) {
 async function applyActionsOwn(node, sim, vars, notices, opts) {
   const actions = (node.data || node.config || {}).actions || [];
   const ctx = opts.context || {};
-  const texts = (a) => a.type === 'set_variable' && a.operation === 'set' ? [a.value] : a.type === 'add_note' ? [a.content]
-    : a.type === 'create_task' || a.type === 'create_appointment' ? [a.title, a.description] : a.type === 'move_funnel' ? [a.deal_title_template, String(a.value ?? '')] : [];
-  if (!actions.every((a) => PASS_ACTIONS.includes(a.type) && texts(a).every((t) => canRender(t, vars)))) return false;
+  if (!actions.every((a) => PASS_ACTIONS.includes(a.type) && actionTexts(a).every((t) => canRender(t, vars)))) return false;
   // Valores dos campos antes de mexer em qualquer coisa (se o tipo do campo não puder ser lido, o Base44 assume)
   const col = { ...(ctx.collected || {}), ...opts.collected };
   const vals = [];
@@ -392,8 +399,15 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
     } else if (a.type === 'assign_attendant') {
       if ((a.mode || 'specific') === 'remove') { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
     } else if (a.type === 'move_funnel') {
-      const title = render(a.deal_title_template || 'Negocio - {{nome}}', { ...vars, nome: sim.nome || vars.contact_phone });
+      const title = render(dealTitle(a.deal_title_template), { ...vars, nome: sim.nome || vars.contact_phone });
       opts.records.push({ type: 'move_funnel', at, stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: render(String(a.value ?? ''), vars), title, ...dealDue(a, (s) => render(s, vars)) });
+    } else if (a.type === 'create_deal') {
+      const title = render(dealTitle(a.title_template), { ...vars, nome: sim.nome || vars.contact_phone });
+      opts.records.push({ type: 'create_deal', at, stage_id: a.stage_id, pipeline_id: a.pipeline_id, value: render(String(a.value ?? ''), vars), title, ...dealDue(a, (s) => render(s, vars)) });
+    } else if (a.type === 'edit_deal') {
+      const title = String(a.title_template || '').trim() ? render(a.title_template, { ...vars, nome: sim.nome || vars.contact_phone }) : '';
+      const value = String(a.value ?? '').trim() !== '' ? render(String(a.value), vars) : '';
+      opts.records.push({ type: 'edit_deal', at, stage_id: a.stage_id || null, pipeline_id: a.pipeline_id || null, title, value, ...dealDue(a, (s) => render(s, vars)) });
     } else if (a.type === 'create_task') {
       let due = a.due_date || null;
       if (a.due_date_type === 'relative' || (!a.due_date_type && a.due_date_days != null)) due = new Date(Date.now() + Number(a.due_date_days ?? 1) * 86400000).toISOString().slice(0, 10);
