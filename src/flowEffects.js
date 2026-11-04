@@ -119,11 +119,25 @@ async function fieldChanged(pool, contact, phone, changes) {
   });
 }
 
+// Atendente mudado no fluxo: o Base44 registra o aviso "Conversa atribuída" na linha do tempo
+async function assignNotice(contact, phone, assignedTo) {
+  if (!contact?.company_id) return;
+  await fetch(`${APP_URL}/functions/workerTrigger`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'assignNotice', company_id: contact.company_id, contact_phone: phone,
+      context: { connection_id: contact.connection_id || null, assigned_to: assignedTo || null },
+    }),
+  });
+}
+
 // meta: o que o fastPath simulou (contato final, registros, origem de cada campo)
 async function commitEffects(pool, { contact, phone, meta }) {
   if (!meta?.sim) return;
   const d = contactDiff(contact, meta.sim);
   await saveContact(pool, contact, d);
+  if ('assigned_to' in d.cols) await assignNotice(contact, phone, d.cols.assigned_to).catch((e) => console.error('[EFFECTS] aviso de atribuição:', e.message));
   for (const r of meta.records || []) await saveRecord(pool, contact, phone, r).catch((e) => console.error(`[EFFECTS] ${r.type}:`, e.message));
   const src = meta.sources || {};
   const changed = d.changes.filter((c) => src[c.key] === 'flow' || src[c.key] === 'api');
