@@ -30,6 +30,7 @@ const { startStaleDealsSweep } = require('./staleDealsSweep');
 const { startDealDueSweep, requestDealDuePlan, dealDueStatus } = require('./dealDueSweep');
 const { startRetentionSweep } = require('./retentionSweep');
 const { handleAi } = require('./aiAgent');
+const { setAiPool } = require('./aiBlock');
 const { handleManualStart } = require('./manualStart');
 const { handleCampaign } = require('./campaign');
 const { handleManualSend } = require('./manualSend');
@@ -283,6 +284,7 @@ async function connectPostgres() {
     setDealVarsPool(pgPool);
     setDealLivePool(pgPool);
     setBotSettingsPool(pgPool);
+    setAiPool(pgPool);
   }
 
   // ── Cliente dedicado para LISTEN/NOTIFY ──

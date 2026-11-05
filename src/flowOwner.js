@@ -26,7 +26,7 @@ function ownable(fast, flow) {
     const j = m.jump;
     return !!j?.flow && j.mode === 'transfer' && !j.fast?._railway_jump && ownable(j.fast, j.flow);
   }
-  return m.ended || !!fast._railway_stop_node || !!m.delay;
+  return m.ended || !!fast._railway_stop_node || !!m.delay || !!m.aiWait;
 }
 
 // Mesmo contexto inicial do Base44 (base44/shared/flowStart.ts)
@@ -56,6 +56,17 @@ function finalState(fast, flow, ctx) {
     c._wait_type = 'delay';
     c._wait_next_node_id = delay.next;
     return { status: 'waiting', current: delay.node_id, ctx: c, steps: executed.length, delayUntil: delay.resume_at };
+  }
+  // Agente de IA: saída sem destino conclui; sem saída volta a esperar a próxima mensagem
+  const ai = fast._meta.aiWait;
+  if (ai) {
+    if (ai.complete) return { status: 'completed', current: ai.cfg?.node_id || executed[executed.length - 1] || null, ctx: c, steps: executed.length };
+    c._wait_type = 'ai_agent';
+    c._wait_config = ai.cfg;
+    c._wait_node_id = ai.cfg?.node_id || null;
+    c._wait_timeout_at = ai.timeout_at;
+    c._ai_responded = !!ai.responded;
+    return { status: 'waiting', current: ai.cfg?.node_id || null, ctx: c, steps: executed.length };
   }
   const stopId = fast._railway_stop_node;
   const sub = fast._meta.stopSub;

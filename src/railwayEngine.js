@@ -13,6 +13,7 @@ const { liveTimeline } = require('./liveTimeline');
 const { loadFacts, passesStageFilter } = require('./crmFacts');
 const { ownStart } = require('./flowOwner');
 const { resumeQuestion } = require('./questionResume');
+const { resumeAi } = require('./aiBlock');
 const PILOT_IDS = (process.env.RAILWAY_ENGINE_PHONE_IDS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
@@ -301,6 +302,10 @@ async function processEvent(ev, pool) {
     console.log(`[ENGINE] id=${ev.id} CLIQUE "${msg.text}" status=${res.status} ${(await res.text()).slice(0, 120)} em ${Date.now() - t0}ms`);
     return false;
   }
+
+  // Fase 5: agente de IA aguardando a resposta do contato → o Railway chama a IA, envia e segue
+  if (await resumeAi(ev, pool, contact, msg, { tryFast, claim })
+    .catch((e) => { console.error(`[ENGINE] id=${ev.id} retomada da IA falhou (Base44 assume):`, e.message); return false; })) return false;
 
   // Fase 5: resposta a uma pergunta do fluxo → o Railway retoma (sem disparar gatilhos, igual ao Base44)
   if (msg.type === 'text' && await resumeQuestion(ev, pool, contact, msg, { tryFast, claim })

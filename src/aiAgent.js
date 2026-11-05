@@ -126,7 +126,8 @@ async function processAi(pool, p) {
   const key = bundle.openai_key;
   const record = { contact_id: contact.id, agent_id: agent.id, messages: [], log: null, el_log: null };
   const rMode = p.response_mode || 'single';
-  const suppress = rMode === 'single';
+  // No bloco do fluxo quem chama pode pedir o envio direto (force_send) e a gravação por conta dele
+  const suppress = rMode === 'single' && !p.force_send;
   if (!key) return { ok: false, error: 'API key OpenAI não configurada' };
 
   if (type === 'audio' && ['', '[áudio]', '[audio]'].includes(text.trim().toLowerCase())) {
@@ -259,7 +260,7 @@ async function processAi(pool, p) {
   const connId = p.connection_id || contact.connection_id;
   const next = branch && conds.find((c) => c.id === branch)?.next_node_id;
   let fast = null;
-  if (next && p.flow_id) {
+  if (!p.skip_branch && next && p.flow_id) {
     try {
       const { rows: [flow] } = await pool.query(`select base44_id, name, nodes from flows where base44_id = $1 limit 1`, [p.flow_id]);
       const loadFlow = async (id) => (await pool.query(
@@ -271,7 +272,7 @@ async function processAi(pool, p) {
       fast = null;
     }
   }
-  await recordFast(pool, { companyId: company, connectionId: connId, contactId: contact.id, phone, fast: { _railway_messages: [...record.messages, ...(fast?._railway_messages || [])] } });
+  if (p.record !== false) await recordFast(pool, { companyId: company, connectionId: connId, contactId: contact.id, phone, fast: { _railway_messages: [...record.messages, ...(fast?._railway_messages || [])] } });
   return { ok: true, response: send, matched_branch: branch, mapped_variables: mapped, response_mode: rMode, sent_as_audio: asAudio, sent_as_button: asButton, _railway_fast: fast || undefined, _record: record };
 }
 
@@ -292,4 +293,4 @@ async function handleAi(req, res, pool) {
   res.end(JSON.stringify(out));
 }
 
-module.exports = { handleAi };
+module.exports = { handleAi, processAi };

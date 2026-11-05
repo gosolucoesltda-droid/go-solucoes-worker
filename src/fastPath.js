@@ -311,7 +311,7 @@ function conditionNext(node, c) {
 
 // Ação: o Base44 grava (tags, campos, tarefas, funil); o Railway só passa por ela e segue enviando.
 // false = ação que interrompe o fluxo (fica com o Base44); 'dirty' = efeito que o Railway não prevê
-const PASS_TYPES = ['condition', 'delay', 'random', 'action', 'api_request', 'elevenlabs_audio', 'google_sheets'];
+const PASS_TYPES = ['condition', 'delay', 'random', 'action', 'api_request', 'elevenlabs_audio', 'google_sheets', 'ai_agent'];
 const PASS_ACTIONS = ['add_tag', 'remove_tag', 'set_variable', 'clear_variable', 'set_status', 'move_funnel', 'create_deal', 'edit_deal', 'create_task', 'add_note', 'create_appointment', 'assign_attendant', 'appointment_status'];
 // Textos que a ação renderiza com variáveis (se o Railway não souber renderizar, o Base44 assume)
 const actionTexts = (a) => a.type === 'set_variable' && a.operation === 'set' ? [a.value] : a.type === 'add_note' ? [a.content]
@@ -668,7 +668,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   let longDelay = null;  // atraso longo alcançado: a execução volta a esperar
   let handoff = false;   // resposta que o Base44 trata (erro de API/planilha): ele segue daqui
   const passed = [];     // ações, API e planilhas percorridas (registro de blocos no painel)
-  const meta = (extra) => ({ applied: !!opts.apply, handoff, delay: longDelay, sim: opts.sim, records: opts.records, sources: opts.sources, collected: opts.collected, passed, ...extra });
+  const meta = (extra) => ({ applied: !!opts.apply, handoff, delay: longDelay, aiWait: opts.aiWait || null, sim: opts.sim, records: opts.records, sources: opts.sources, collected: opts.collected, passed, ...extra });
   // Não enumerável: não vai junto no contexto enviado ao Base44
   const withMeta = (r, extra) => { if (r) Object.defineProperty(r, '_meta', { value: meta(extra), enumerable: false }); return r; };
   const skipConditions = async () => {
@@ -770,6 +770,21 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         node = nodes.find((n) => n.id === nextOf(node));
         continue;
       }
+      // Agente de IA: 'wait_input' pausa; 'bot_first' chama a IA, envia e escolhe a saída
+      if (node.type === 'ai_agent') {
+        const { runAiNode } = require('./aiBlock');
+        const ai = await runAiNode(node, vars, sim, opts, flow.base44_id);
+        if (!ai) return false;
+        for (const m of ai.messages || []) await push(m);
+        passed.push(node.id);
+        executed.push(node.id);
+        // Saída condicional escolhida pela IA: o fluxo segue por ela
+        if (ai.route) { node = nodes.find((n) => n.id === ai.route); continue; }
+        // Sem saída (ou saída sem destino): o trecho termina aqui, aguardando ou concluído
+        opts.aiWait = ai;
+        node = null;
+        return true;
+      }
       if (dirty) return false;
       const nx = conditionNext(node, sim);
       if (nx === undefined) return false;
@@ -786,7 +801,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     ? withMeta({ _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...voiceVars() }, { ended: false, stopSub: null }) : null;
   // Resultado completo (fim do fluxo, parada num botão/lista/pergunta ou atraso longo)
   const finish = (stop) => withMeta({ _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() },
-    { ended: !stop && !node && !longDelay, stopSub: stop ? opts.stopSub || null : null });
+    { ended: !stop && !node && !longDelay && !opts.aiWait, stopSub: stop ? opts.stopSub || null : null });
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
@@ -804,7 +819,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   }
   if (!isSupported(node, vars, opts.wait.left)) {
     // Retomada: nada mais a enviar (fim do fluxo depois de ações/API, ou atraso longo) — o Railway conclui
-    return !node && !handoff && opts.apply ? finish(null) : partial();
+    return !node && !handoff && (opts.apply || opts.aiWait) ? finish(null) : partial();
   }
   const creds = await getCreds(companyId, connectionId);
   let stop = null;
