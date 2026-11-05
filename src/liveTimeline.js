@@ -44,13 +44,15 @@ function liveTimeline(pool, { companyId, connectionId, contactId, phone }) {
   };
 }
 
-// Assume o aviso gravado ao vivo (mesmo tipo/conteúdo, últimos 10 min); senão cria um novo
+// Assume o aviso gravado ao vivo (mesmo tipo/conteúdo, últimos 10 min); senão cria um novo.
+// O horário do aviso passa a ser o do passo real (a.created_at): o aviso ao vivo pode ter sido
+// gravado na pré-execução do fluxo, segundos antes, o que embaralhava a ordem da timeline.
 async function claimOrInsertNotice(pool, a) {
   const { rowCount } = await pool.query(
-    `update crm_activities set metadata = $6, created_by = $7 where id = (
+    `update crm_activities set metadata = $6, created_by = $7, created_at = coalesce($8::timestamptz, created_at) where id = (
        select id from crm_activities where company_id = $1 and connection_id is not distinct from $2 and contact_phone = $3 and type = $4
        and content is not distinct from $5 and metadata->>'_live' = 'true' and created_at > now() - interval '10 minutes' order by created_at limit 1)`,
-    [a.company_id, a.connection_id, a.contact_phone, a.type, a.content, JSON.stringify(a.metadata || null), a.created_by]
+    [a.company_id, a.connection_id, a.contact_phone, a.type, a.content, JSON.stringify(a.metadata || null), a.created_by, a.created_at ? new Date(a.created_at).toISOString() : null]
   );
   if (rowCount) return;
   await pool.query(
