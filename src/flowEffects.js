@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { parseFieldDate, calcScheduledFor } = require('./fieldDateSweep');
 const { saveDealFields } = require('./dealFieldMap');
 const { logDealChanges, stageNameOf } = require('./dealNotices');
+const { claimOrInsertNotice } = require('./liveTimeline');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 
@@ -45,9 +46,32 @@ async function saveContact(pool, contact, d) {
      tags = case when $4 then $5::text[] else tags end, ${sets.length ? sets.join(', ') + ',' : ''} updated_at = now() where id = $1`, args);
 }
 
+// Card novo no funil (usado por "Mover no funil" e "Criar negócio")
+async function insertDeal(pool, contact, phone, r) {
+  await pool.query(
+    `insert into crm_deals (id, company_id, connection_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, due_date, due_time, created_at, updated_at)
+     values ($1,$2,$10,$3,$4,$5,$6,$7,'open',now(),0,$8,$9,now(),now())`,
+    [newId(), contact.company_id, r.pipeline_id || null, r.stage_id || null, r.title, phone, parseMoney(r.value), r.due_date || null, r.due_time || null, contact.connection_id || null]);
+}
+
+// Negócio novo pelo fluxo: aviso no chat para a etiqueta da etapa aparecer na lista de conversas
+async function dealStageNotice(pool, contact, phone, r) {
+  const to = await stageNameOf(pool, r.stage_id);
+  await logDealChanges(pool, { companyId: contact.company_id, connectionId: contact.connection_id, phone, at: r.at }, { stage_name: '' }, { stage_name: to });
+}
+
 // Negócio, tarefa, nota e agendamento (mesmos campos que o Base44 grava)
 async function saveRecord(pool, contact, phone, r) {
   const company = contact.company_id;
+  // Aviso "Conversa atribuída": o Railway já gravou ao vivo na hora da ação — aqui só o confirma
+  if (r.type === 'assign_notice') {
+    return claimOrInsertNotice(pool, {
+      company_id: company, connection_id: contact.connection_id || null, contact_phone: phone,
+      type: 'conversation_assigned', content: r.content,
+      metadata: { assigned_to: r.assigned_to || null, assigned_by: 'Fluxo' },
+      created_by: 'Fluxo', created_at: r.at,
+    });
+  }
   if (r.type === 'deal_fields') return saveDealFields(pool, contact, phone, r);
   if (r.type === 'move_funnel') {
     const { rows: [deal] } = await pool.query(
@@ -59,10 +83,33 @@ async function saveRecord(pool, contact, phone, r) {
       const [from, to] = await Promise.all([stageNameOf(pool, deal.stage_id), stageNameOf(pool, r.stage_id)]);
       await logDealChanges(pool, { companyId: company, connectionId: contact.connection_id, phone, at: r.at }, { stage_name: from }, { stage_name: to });
     } else if (!deal && r.create_if_missing) {
-      await pool.query(
-        `insert into crm_deals (id, company_id, connection_id, pipeline_id, stage_id, title, contact_phone, value, status, stage_entered_at, position, due_date, due_time, created_at, updated_at)
-         values ($1,$2,$10,$3,$4,$5,$6,$7,'open',now(),0,$8,$9,now(),now())`, [newId(), company, r.pipeline_id || null, r.stage_id || null, r.title, phone, parseMoney(r.value), r.due_date || null, r.due_time || null, contact.connection_id || null]);
+      await insertDeal(pool, contact, phone, r);
+      await dealStageNotice(pool, contact, phone, r);
     }
+  } else if (r.type === 'create_deal') {
+    // Sempre um negócio novo (mesmo se o contato já tiver um aberto)
+    await insertDeal(pool, contact, phone, r);
+    await dealStageNotice(pool, contact, phone, r);
+  } else if (r.type === 'edit_deal') {
+    // Edita o negócio em aberto do contato: nome, valor, etapa e vencimento
+    const { rows: [deal] } = await pool.query(
+      `select id, stage_id, title, value, due_date, due_time from crm_deals where company_id = $1 and contact_phone = $2 and status = 'open' and ($3::text is null or pipeline_id = $3)
+       order by created_at desc limit 1`, [company, phone, r.pipeline_id || null]);
+    if (!deal) return;
+    const sets = ['updated_at = now()'];
+    const args = [deal.id];
+    const set = (col, val) => { args.push(val); sets.push(`${col} = $${args.length}`); };
+    if (r.title) set('title', r.title);
+    const newValue = String(r.value ?? '').trim() !== '' ? parseMoney(r.value) : null;
+    if (newValue !== null) set('value', newValue);
+    if (r.stage_id && r.stage_id !== deal.stage_id) { set('stage_id', r.stage_id); sets.push('stage_entered_at = now()'); }
+    if (r.due_date) { set('due_date', r.due_date); set('due_time', r.due_time || null); }
+    if (sets.length === 1) return;
+    await pool.query(`update crm_deals set ${sets.join(', ')} where id = $1`, args);
+    const [from, to] = await Promise.all([stageNameOf(pool, deal.stage_id), stageNameOf(pool, r.stage_id || deal.stage_id)]);
+    await logDealChanges(pool, { companyId: company, connectionId: contact.connection_id, phone, at: r.at },
+      { title: deal.title, value: deal.value, due_date: deal.due_date, due_time: deal.due_time, stage_name: from },
+      { title: r.title || deal.title, value: newValue !== null ? newValue : deal.value, due_date: r.due_date || deal.due_date, due_time: r.due_date ? (r.due_time || null) : deal.due_time, stage_name: to });
   } else if (r.type === 'create_task') {
     await pool.query(
       `insert into crm_tasks (id, company_id, contact_phone, title, status, due_date, priority, position, is_recurring, tags, extra, created_at, updated_at)
@@ -119,25 +166,11 @@ async function fieldChanged(pool, contact, phone, changes) {
   });
 }
 
-// Atendente mudado no fluxo: o Base44 registra o aviso "Conversa atribuída" na linha do tempo
-async function assignNotice(contact, phone, assignedTo) {
-  if (!contact?.company_id) return;
-  await fetch(`${APP_URL}/functions/workerTrigger`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      action: 'assignNotice', company_id: contact.company_id, contact_phone: phone,
-      context: { connection_id: contact.connection_id || null, assigned_to: assignedTo || null },
-    }),
-  });
-}
-
 // meta: o que o fastPath simulou (contato final, registros, origem de cada campo)
 async function commitEffects(pool, { contact, phone, meta }) {
   if (!meta?.sim) return;
   const d = contactDiff(contact, meta.sim);
   await saveContact(pool, contact, d);
-  if ('assigned_to' in d.cols) await assignNotice(contact, phone, d.cols.assigned_to).catch((e) => console.error('[EFFECTS] aviso de atribuição:', e.message));
   for (const r of meta.records || []) await saveRecord(pool, contact, phone, r).catch((e) => console.error(`[EFFECTS] ${r.type}:`, e.message));
   const src = meta.sources || {};
   const changed = d.changes.filter((c) => src[c.key] === 'flow' || src[c.key] === 'api');

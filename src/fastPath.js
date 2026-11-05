@@ -398,7 +398,27 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
     } else if (a.type === 'set_status') {
       sim.custom_fields.attendance_status = a.status;
     } else if (a.type === 'assign_attendant') {
-      if ((a.mode || 'specific') === 'remove') { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
+      const remove = (a.mode || 'specific') === 'remove';
+      if (remove) { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
+      // Aviso "Conversa atribuída" na hora, com o nome já salvo no bloco (antes só era pedido ao
+      // Base44 no fim do trecho: aparecia segundos depois das mensagens que vinham em seguida)
+      const who = remove ? '' : (a.user_name || (a.user_id === 'owner' ? 'Owner' : ''));
+      if (who || remove) {
+        const content = who ? `Conversa atribuída para: ${who}` : 'Atribuição removida';
+        const assigned = remove ? null : (sim.assigned_to || null);
+        notices.push(['conversation_assigned', content, { assigned_to: assigned, assigned_by: 'Fluxo' }]);
+        opts.records.push({ type: 'assign_notice', content, assigned_to: assigned, at });
+      } else if (sim.assigned_to) {
+        // Fluxo antigo, sem o nome do atendente salvo no bloco: o Base44 resolve o nome —
+        // pedido agora (sem esperar) em vez de só no fim do trecho
+        fetch(`${APP_URL}/functions/workerTrigger`, {
+          method: 'POST', headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'assignNotice', company_id: opts.companyId, contact_phone: opts.phone,
+            context: { connection_id: opts.connectionId || null, assigned_to: sim.assigned_to },
+          }),
+        }).catch(() => {});
+      }
     } else if (a.type === 'move_funnel') {
       const title = render(dealTitle(a.deal_title_template), { ...vars, nome: sim.nome || vars.contact_phone });
       opts.records.push({ type: 'move_funnel', at, stage_id: a.stage_id, pipeline_id: a.pipeline_id, create_if_missing: !!a.create_if_missing, value: render(String(a.value ?? ''), vars), title, ...dealDue(a, (s) => render(s, vars)) });

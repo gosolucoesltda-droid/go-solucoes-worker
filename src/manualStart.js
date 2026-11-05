@@ -12,17 +12,25 @@ async function handleManualStart(req, res, pool) {
   for await (const chunk of req) body += chunk;
   try {
     const { flow_id, contact_phone, company_id, connection_id } = JSON.parse(body);
+    let { last_reply: lastReply } = JSON.parse(body);
     const { rows: [flow] } = await pool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and status = 'active' limit 1`, [flow_id]);
     const { rows: [contact] } = await pool.query(
       `select id, nome, email, empresa, telefone, tags, custom_fields from crm_contacts where telefone = $1 and connection_id = $2 limit 1`,
       [contact_phone, connection_id]);
     if (!flow || !contact) return reply(200, { fast: null });
+    // "Última mensagem recebida" nas condições: vale a última mensagem real do cliente
+    if (lastReply === undefined || lastReply === null) {
+      const { rows: [last] } = await pool.query(
+        `select body from crm_messages where contact_id = $1 and direction = 'inbound' order by created_at desc limit 1`, [contact.id]);
+      lastReply = last?.body || '';
+    }
+    const manualCtx = { last_reply: String(lastReply || ''), message_text: String(lastReply || '') };
     const loadFlow = async (id) => (await pool.query(
       `select base44_id, name, nodes from flows where base44_id = $1 and connection_id = $2 and status = 'active' limit 1`, [id, connection_id])).rows[0] || null;
     // live: cada aviso e mensagem aparece no chat na hora, na ordem do fluxo
     const live = liveTimeline(pool, { companyId: company_id, connectionId: connection_id, contactId: contact.id, phone: contact_phone });
-    const fast = await runFast(flow, firstNodeId(flow), { companyId: company_id, connectionId: connection_id, phone: contact_phone, contact, loadFlow, fresh: true, windowOpen: true, live, started: true, manual: true });
+    const fast = await runFast(flow, firstNodeId(flow), { companyId: company_id, connectionId: connection_id, phone: contact_phone, contact, loadFlow, fresh: true, windowOpen: true, live, started: true, manual: true, context: manualCtx });
     if (fast) console.log(`[MANUAL] RAILWAY ENVIOU ${(fast._railway_messages || []).length} msg(s) de "${flow.name}"`);
     await recordFast(pool, { companyId: company_id, connectionId: connection_id, contactId: contact.id, phone: contact_phone, flow, fast, startNodeId: firstNodeId(flow) });
     reply(200, { fast });

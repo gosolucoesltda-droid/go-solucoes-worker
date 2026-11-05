@@ -40,20 +40,25 @@ async function applyDealPatch(opts, vars, patch, notice) {
   await noticeChanges(before, dv, notice);
 }
 
-// Ação "Mover no funil": nova etapa (ou negócio novo, se criado)
+// Ação "Mover no funil", "Criar negócio" e "Editar negócio": nova etapa (ou negócio novo, se criado)
 async function applyMoveFunnel(node, vars, opts, render, notice) {
-  const moves = ((node.data || node.config || {}).actions || []).filter((a) => a.type === 'move_funnel' && a.stage_id);
+  const moves = ((node.data || node.config || {}).actions || [])
+    .filter((a) => a.stage_id && ['move_funnel', 'create_deal', 'edit_deal'].includes(a.type));
   for (const a of moves) {
     const dv = await liveDealVars(opts);
     const stage = pool ? await stageNameOf(pool, a.stage_id).catch(() => '') : '';
     if ('deal_nome' in dv) {
       const before = { ...dv };
       dv.deal_stage = stage;
-      if (stage && before.deal_stage && before.deal_stage !== stage) await noticeChanges(before, dv, notice);
+      if (stage && before.deal_stage !== stage) await noticeChanges(before, dv, notice);
     }
-    else if (a.create_if_missing) {
-      const title = render(a.deal_title_template || 'Negocio - {{nome}}', { ...vars, nome: opts.sim?.nome || vars.contact_phone });
+    else if (a.type === 'create_deal' || a.create_if_missing) {
+      const tpl = a.type === 'create_deal' ? a.title_template : a.deal_title_template;
+      const title = render(tpl || 'Novo negócio', { ...vars, nome: opts.sim?.nome || vars.contact_phone });
       Object.assign(dv, dealVars({ title, value: parseMoney(render(String(a.value ?? ''), vars)), ...dealDue(a, render), stage_name: stage }));
+      // Negócio criado pelo fluxo: o aviso da nova etapa também aparece na hora (o registro
+      // definitivo assume esta mesma linha ao gravar o card no funil)
+      if (notice && stage) await notice('field_updated', 'deal_stage', { field: 'deal_stage', key: 'deal_stage', old_value: null, new_value: stage });
     }
     Object.assign(vars, dv);
   }
