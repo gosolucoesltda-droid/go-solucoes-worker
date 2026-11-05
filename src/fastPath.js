@@ -415,7 +415,8 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
           method: 'POST', headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: 'assignNotice', company_id: opts.companyId, contact_phone: opts.phone,
-            context: { connection_id: opts.connectionId || null, assigned_to: sim.assigned_to },
+            // "at" = horário em que o fluxo passou pelo bloco (o aviso entra na posição certa da conversa)
+            context: { connection_id: opts.connectionId || null, assigned_to: sim.assigned_to, at },
           }),
         }).catch(() => {});
       }
