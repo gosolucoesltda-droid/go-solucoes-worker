@@ -28,6 +28,7 @@ const { startTimeoutWatcher, checkTimeoutsNow } = require('./timeoutWatcher');
 const { startFieldDateSweep } = require('./fieldDateSweep');
 const { startStaleDealsSweep } = require('./staleDealsSweep');
 const { startDealDueSweep, requestDealDuePlan, dealDueStatus } = require('./dealDueSweep');
+const { startRetentionSweep } = require('./retentionSweep');
 const { handleAi } = require('./aiAgent');
 const { handleManualStart } = require('./manualStart');
 const { handleCampaign } = require('./campaign');
@@ -907,6 +908,7 @@ async function main() {
   startFieldDateSweep(pgPool);
   startStaleDealsSweep(pgPool, callBase44Function);
   startDealDueSweep(pgPool);
+  startRetentionSweep(pgPool);
 }
 
 main().catch(e => {
