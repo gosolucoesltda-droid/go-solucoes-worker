@@ -65,8 +65,16 @@ async function planCompany(pool, companyId) {
     `update scheduled_jobs set status = 'cancelled', error_message = 'Vencimento ou horário alterado'
      where company_id = $1 and reference_type = 'deal_due' and status = 'pending' and scheduled_for > now()
        and not (reference_id = any($2::text[]))`, [companyId, desired.map((x) => x.ref)]);
+  // Só insere o que falta: um único select traz os agendamentos já registrados da empresa
+  // (mesmos estados do índice de deduplicação) e evita milhares de inserts descartados.
+  const { rows: existingRows } = await q(pool,
+    `select reference_id from scheduled_jobs
+     where company_id = $1 and reference_type = 'deal_due' and status in ('pending', 'queued', 'running', 'completed')`,
+    [companyId]);
+  const existing = new Set(existingRows.map((r) => r.reference_id));
   let created = 0;
   for (const x of desired) {
+    if (existing.has(x.ref)) continue;
     const { rowCount } = await q(pool,
       `insert into scheduled_jobs (company_id, job_type, flow_base44_id, contact_phone, scheduled_for, status, attempts, max_attempts, reference_id, reference_type, context)
        values ($1, 'flow_trigger', $2, $3, $4, 'pending', 0, 3, $5, 'deal_due', $6) on conflict do nothing`,
