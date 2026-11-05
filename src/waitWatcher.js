@@ -2,13 +2,15 @@
 // Railway retoma direto as execuções em espera (sem scheduled_jobs):
 // - bloco de atraso (_wait_type = 'delay')       → retoma no próximo nó
 // (tempos limite de resposta e da IA ficam no timeoutWatcher.js)
-// Lê crm_flow_executions a cada 10s; uma trava claim_flow_trigger por
-// execução + horário evita retomada dupla.
+// Acorda no horário exato do próximo atraso (delay_until), não a cada 10s:
+// antes um bloco de 30s só disparava no ciclo seguinte (até 10s de atraso).
+// Uma trava claim_flow_trigger por execução + horário evita retomada dupla.
 // Quando todo o caminho depois do atraso é do Railway (mensagens, condições, ações,
 // requisição de API, planilha, salto "transferir" e outro atraso longo), ele mesmo
 // registra a execução e grava os efeitos (ownResume); senão o Base44 continua como antes.
 // ═══════════════════════════════════════════════════════════
-const INTERVAL_MS = 10000;
+const MAX_INTERVAL_MS = 10000; // teto entre verificações (o alvo exato vem do delay_until)
+const MIN_INTERVAL_MS = 50;
 const { runFast } = require('./fastPath');
 const { recordFast } = require('./supabaseRecorder');
 const { liveTimeline } = require('./liveTimeline');
@@ -69,9 +71,20 @@ async function resumeDelay(pool, ex, callBase44Function, key) {
 
 function startWaitWatcher(pool, callBase44Function) {
   let busy = false;
-  setInterval(async () => {
-    if (busy || !pool) return;
+  let timer = null;
+
+  // Próxima verificação: no horário exato do atraso mais próximo (teto de 10s)
+  const schedule = (nextAt) => {
+    clearTimeout(timer);
+    const wait = nextAt ? nextAt - Date.now() + 30 : MAX_INTERVAL_MS;
+    timer = setTimeout(tick, Math.min(Math.max(wait, MIN_INTERVAL_MS), MAX_INTERVAL_MS));
+  };
+
+  async function tick() {
+    if (!pool) return schedule(null);
+    if (busy) return schedule(null);
     busy = true;
+    let nextAt = null;
     try {
       const { rows } = await pool.query(
         `select id, company_id, connection_id, flow_id, contact_phone, delay_until, context
@@ -86,12 +99,21 @@ function startWaitWatcher(pool, callBase44Function) {
         if (!c[0]?.won) continue;
         await resumeDelay(pool, ex, callBase44Function, key).catch((e) => console.error(`[WAIT] erro exec=${ex.id}:`, e.message));
       }
+      // Atraso mais próximo ainda no futuro: acorda nele, sem esperar o ciclo de 10s
+      const { rows: [nx] } = await pool.query(
+        `select min(delay_until) as at from crm_flow_executions
+         where status = 'waiting' and context->>'_wait_type' = 'delay' and delay_until > now()`
+      );
+      nextAt = nx?.at ? new Date(nx.at).getTime() : null;
     } catch (e) {
       console.error('[WAIT] erro:', e.message);
     } finally {
       busy = false;
+      schedule(nextAt);
     }
-  }, INTERVAL_MS);
+  }
+
+  schedule(null);
 }
 
 module.exports = { startWaitWatcher };

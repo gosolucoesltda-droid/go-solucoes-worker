@@ -673,8 +673,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   const withMeta = (r, extra) => { if (r) Object.defineProperty(r, '_meta', { value: meta(extra), enumerable: false }); return r; };
   const skipConditions = async () => {
     for (let i = 0; PASS_TYPES.includes(node?.type) && i < 15; i++) {
+      // Voz também nos fluxos encadeados (salto): sem isso o salto caía para o Base44
       if (node.type === 'elevenlabs_audio') {
-        const url = depth === 0 ? await runVoice(node, vars, opts, flow.base44_id) : null;
+        const url = await runVoice(node, vars, opts, flow.base44_id);
         if (!url) return false;
         vars[nk('audio_response')] = url; opts.audio = url;
         executed.push(node.id);
