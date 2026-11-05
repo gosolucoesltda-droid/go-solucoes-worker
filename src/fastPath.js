@@ -775,6 +775,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const { runAiNode } = require('./aiBlock');
         const ai = await runAiNode(node, vars, sim, opts, flow.base44_id);
         if (!ai) return false;
+        opts.aiNodes.push(node.id);
         for (const m of ai.messages || []) await push(m);
         passed.push(node.id);
         executed.push(node.id);
@@ -795,12 +796,14 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   opts.api = opts.api || {};
   opts.sheets = opts.sheets || {};
   opts.actionAt = opts.actionAt || {};
+  // Blocos de IA que o Railway respondeu nesta mensagem (o Base44 não chama a IA de novo)
+  opts.aiNodes = opts.aiNodes || [];
   // Áudio gerado: o Base44 recebe o link em {{audio_response}}
   const voiceVars = () => opts.audio ? { variables: { ...((opts.context || {}).variables || {}), audio_response: opts.audio } } : {};
   const partial = () => (executed.length || Object.keys(opts.api).length || Object.keys(opts.sheets).length || opts.apply)
-    ? withMeta({ _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...voiceVars() }, { ended: false, stopSub: null }) : null;
+    ? withMeta({ _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.aiNodes.length ? { _railway_ai_nodes: opts.aiNodes } : {}), ...voiceVars() }, { ended: false, stopSub: null }) : null;
   // Resultado completo (fim do fluxo, parada num botão/lista/pergunta ou atraso longo)
-  const finish = (stop) => withMeta({ _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...voiceVars() },
+  const finish = (stop) => withMeta({ _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...(opts.aiNodes.length ? { _railway_ai_nodes: opts.aiNodes } : {}), ...voiceVars() },
     { ended: !stop && !node && !longDelay && !opts.aiWait, stopSub: stop ? opts.stopSub || null : null });
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
