@@ -377,6 +377,8 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
     return false;
   }
   const at = new Date().toISOString();
+  // Avisos pedidos a outros serviços: o fluxo espera todos antes de seguir
+  const pending = [];
   actions.forEach((a, i) => {
     applyFactAction(sim._facts, a);
     if (a.type === 'add_tag') {
@@ -409,16 +411,17 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
         notices.push(['conversation_assigned', content, { assigned_to: assigned, assigned_by: 'Fluxo' }]);
         opts.records.push({ type: 'assign_notice', content, assigned_to: assigned, at });
       } else if (sim.assigned_to) {
-        // Fluxo antigo, sem o nome do atendente salvo no bloco: o Base44 resolve o nome —
-        // pedido agora (sem esperar) em vez de só no fim do trecho
-        fetch(`${APP_URL}/functions/workerTrigger`, {
+        // Fluxo antigo, sem o nome do atendente salvo no bloco: o Base44 resolve o nome.
+        // O fluxo ESPERA esse aviso ser gravado antes de seguir para o próximo bloco,
+        // então ele aparece na conversa na posição certa (nunca depois das mensagens seguintes).
+        pending.push(fetch(`${APP_URL}/functions/workerTrigger`, {
           method: 'POST', headers: { Authorization: `Bearer ${WORKER_SECRET}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: 'assignNotice', company_id: opts.companyId, contact_phone: opts.phone,
             // "at" = horário em que o fluxo passou pelo bloco (o aviso entra na posição certa da conversa)
             context: { connection_id: opts.connectionId || null, assigned_to: sim.assigned_to, at },
           }),
-        }).catch(() => {});
+        }).catch(() => {}));
       }
     } else if (a.type === 'move_funnel') {
       const title = render(dealTitle(a.deal_title_template), { ...vars, nome: sim.nome || vars.contact_phone });
@@ -444,6 +447,8 @@ async function applyActionsOwn(node, sim, vars, notices, opts) {
       opts.records.push({ type: 'create_appointment', title: render(a.title || 'Agendamento', vars), description: render(a.description || '', vars), start: start.toISOString(), end: end.toISOString(), assigned_to: a.assigned_to || '' });
     }
   });
+  // Espera cada aviso ficar gravado antes do próximo bloco (ordem certa no chat)
+  if (pending.length) await Promise.all(pending);
   return true;
 }
 
