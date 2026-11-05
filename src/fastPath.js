@@ -614,6 +614,9 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
   opts.random = opts.random || {};
   // Cópia do contato com os efeitos das ações já percorridas (para as condições seguintes)
   const sim = { ...(contact || {}), tags: [...((contact || {}).tags || [])], custom_fields: { ...((contact || {}).custom_fields || {}) } };
+  // Última mensagem recebida vem do gatilho — sem isso as condições "Última mensagem recebida" davam sempre falso
+  const lastReply = (opts.context || {}).last_reply;
+  if (lastReply !== undefined && lastReply !== null) sim.last_reply = String(lastReply);
   // Funil, tarefas e agendamentos: só lê quando o fluxo tem condição sobre eles
   if (!opts.facts && needsFacts(nodes)) opts.facts = await loadFacts(companyId, phone);
   sim._facts = opts.facts || null;
