@@ -267,6 +267,7 @@ function evalFilter(f, c) {
       return op === 'is' ? matches : !matches;
     }
     case 'tag': { const has = (c.tags || []).map(normText).includes(normText(value)); return op === 'has_tag' || op === 'is' ? has : !has; }
+    case 'ultima_mensagem': case 'last_reply': return compareText(c.last_reply, op, value);
     case 'nome': case 'contact_name': return compareText(c.nome, op, value);
     case 'email': case 'contact_email': return compareText(c.email, op, value);
     case 'telefone': case 'contact_phone': return compareText(c.telefone, op, value);
