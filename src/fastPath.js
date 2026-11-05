@@ -339,6 +339,18 @@ function applyActions(node, sim, vars, notices = []) {
       sim.tags = sim.tags.filter((t) => !(a.tags || []).includes(t));
       if (removed.length) notices.push(['tag_removed', removed.join(', '), { tags: removed }]);
     }
+    // Atribuir atendente: o aviso "Conversa atribuída" é gravado AQUI, na hora do bloco.
+    // Sem isso ele só era gravado no registro final do fluxo e chegava por último no chat.
+    if (a.type === 'assign_attendant') {
+      const remove = (a.mode || 'specific') === 'remove';
+      if (remove) { sim.assigned_to = null; sim.observacoes = ''; } else sim.assigned_to = a.user_id || a.assigned_to || '';
+      const who = remove ? '' : (a.user_name || (a.user_id === 'owner' ? 'Owner' : ''));
+      // Bloco antigo sem o nome do atendente: o Base44 registra (ele resolve o nome)
+      if (who || remove) {
+        notices.push(['conversation_assigned', who ? `Conversa atribuída para: ${who}` : 'Atribuição removida',
+          { assigned_to: remove ? null : (sim.assigned_to || null), assigned_by: 'Fluxo' }]);
+      }
+    }
     if (a.type === 'set_variable' && a.field_key) {
       const old = sim.custom_fields[a.field_key] ?? null;
       const known = (a.operation === 'set' && canRender(a.value, vars)) || a.operation === 'clear';
