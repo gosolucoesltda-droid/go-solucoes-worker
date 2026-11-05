@@ -141,6 +141,10 @@ async function startFlow(ev, flow, contact, msg, pool) {
   // last_reply = última mensagem recebida (usada pelos filtros de condição)
   const trigger = { connection_id: contact.connection_id, message_text: msg.text, last_reply: msg.text, message_type: msg.type, whatsapp_window_open: true, _source: 'railway_engine' };
   const fast = await tryFast(ev, pool, flow, startNodeId, contact, msg, { fresh: true, record: false, started: true, context: trigger });
+  // O Railway já usou esta mensagem: o fluxo pode ter parado num bloco de IA ou pergunta
+  // esperando o contato. Sem esta trava o Base44 retomava a execução recém-criada com a
+  // MESMA mensagem e o bloco de IA respondia duas vezes.
+  if (fast) await claim(pool, { base44_id: `resume:${msg.raw.id}` }, msg.from, 86400);
   // Fase 5: caminho todo do Railway → ele mesmo registra a execução; o Base44 não é chamado
   if (fast && await ownStart(pool, { flow, contact, phone: msg.from, fast, trigger })) return;
   await saveFast(pool, contact, msg, flow, fast, startNodeId);
