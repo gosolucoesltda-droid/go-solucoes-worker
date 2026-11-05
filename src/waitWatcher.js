@@ -44,6 +44,9 @@ async function continueFast(pool, ex, nextId) {
 
 async function resumeDelay(pool, ex, callBase44Function, key) {
   const nextId = ex.context?._wait_next_node_id || null;
+  // Prova de pontualidade do bloco de atraso (horário marcado → disparo)
+  const lateMs = ex.delay_until ? Date.now() - new Date(ex.delay_until).getTime() : 0;
+  console.log(`[WAIT] atraso disparado pelo Railway exec=${ex.id} (+${lateMs}ms do horário marcado)`);
   const ctx = { ...(ex.context || {}) };
   delete ctx._wait_type; delete ctx._wait_next_node_id;
   if (!nextId) {
@@ -66,7 +69,7 @@ async function resumeDelay(pool, ex, callBase44Function, key) {
     context: { connection_id: ex.connection_id, _delay_resume_execution_id: ex.id, _delay_resume_next_node_id: nextId, ...(fast ? { _railway_fast: fast } : {}) },
     reference_id: key,
   }).catch((e) => ({ ok: false, error: e.message }));
-  console.log(`[WAIT] atraso retomado pelo Base44 exec=${ex.id} ok=${r?.ok} ${r?.error || ''}`);
+  console.log(`[WAIT] atraso disparado aqui; continuação registrada pelo Base44 (${fast?._meta?.handoff ? 'o caminho seguinte usa um bloco que só ele executa, ex.: agente de IA' : 'o caminho seguinte não é todo do Railway'}) exec=${ex.id} ok=${r?.ok} ${r?.error || ''}`);
 }
 
 function startWaitWatcher(pool, callBase44Function) {
