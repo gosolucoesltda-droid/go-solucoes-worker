@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
 const { generatePassword } = require('./passwordGenerator');
+const { loadDealVars } = require('./dealVars');
 
 const newId = () => crypto.randomBytes(12).toString('hex');
 const digits = (v) => String(v || '').replace(/\D/g, '');
@@ -75,10 +76,14 @@ async function getContactByField({ pool, body, company, connId }) {
      order by c.ultima_mensagem_em desc nulls last limit 200`,
     [company.id, connId, norm(field_key), String(field_value).trim().toLowerCase()]);
   const f = rows[0];
+  // Variáveis do negócio no funil (as mesmas dos fluxos: {{deal_nome}}, {{deal_value}}…)
+  const deal = f ? await loadDealVars(pool, { companyId: company.id, connectionId: connId || f.connection_id || null, phone: f.telefone }) : {};
   return [200, {
     ok: true, bot_id: connId || f?.connection_id || null, field_key: f?.matched_key || field_key, field_value, total: rows.length,
     contact_id: f?.id || null, nome: f?.nome || null, telefone: f?.telefone || null, phone: f?.telefone || null,
     email: f?.email || null, empresa: f?.empresa || null, tags: f?.tags || [], custom_fields: f?.custom_fields || {},
+    deal_nome: deal.deal_nome || null, deal_value: deal.deal_value || null, deal_date: deal.deal_date || null,
+    deal_datetime: deal.deal_datetime || null, deal_stage: deal.deal_stage || null,
   }];
 }
 
