@@ -38,6 +38,7 @@ const { setFactsPool } = require('./crmFacts');
 const { setBotSettingsPool } = require('./botSettings');
 const { serveAudio } = require('./voiceAudio');
 const { handlePublicApi } = require('./publicApi');
+const { handleFlowApi, pilotIds } = require('./whatsappFlows');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -90,6 +91,21 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/proxy-fetch') {
     return proxyFetchHandler(req, res);
+  }
+
+  // Bots que o motor do Railway executa (usado pelo editor para liberar o Formulário em etapas)
+  if (req.method === 'GET' && url.pathname === '/engine/pilot-ids') {
+    if ((req.headers.authorization || '') !== `Bearer ${WORKER_SECRET}`) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true, ...pilotIds() }));
+  }
+
+  // WhatsApp Flows — criar / validar / publicar / listar formulários (chamado pela função Base44)
+  if (req.method === 'POST' && url.pathname === '/whatsapp-flow') {
+    return handleFlowApi(req, res, pgPool, { setBotSettingsPool });
   }
 
   if (req.method === 'POST' && url.pathname === '/flow/manual') {

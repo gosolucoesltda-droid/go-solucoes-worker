@@ -19,7 +19,7 @@ const DUE_SQL = `
   select e.id, e.company_id, e.connection_id, e.flow_id, e.contact_phone, e.current_node_id, e.context,
          f.base44_id, f.name, f.trigger_type, f.nodes
   from crm_flow_executions e join flows f on f.base44_id = e.flow_id and f.connection_id = e.connection_id
-  where e.status = 'waiting' and e.id not like 'rw\\_%' and e.context->>'_wait_type' in ('reply', 'ai_agent')
+  where e.status = 'waiting' and e.id not like 'rw\\_%' and e.context->>'_wait_type' in ('reply', 'ai_agent', 'flow_reply')
     and nullif(e.context->>'_wait_timeout_at', '')::timestamptz <= now()
     and nullif(e.context->>'_wait_timeout_at', '')::timestamptz > now() - interval '7 days'
   order by e.context->>'_wait_timeout_at' limit 30`;

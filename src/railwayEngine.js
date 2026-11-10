@@ -14,6 +14,7 @@ const { loadFacts, passesStageFilter } = require('./crmFacts');
 const { ownStart } = require('./flowOwner');
 const { resumeQuestion } = require('./questionResume');
 const { resumeAi } = require('./aiBlock');
+const { handleFlowReply } = require('./whatsappFlows');
 const PILOT_IDS = (process.env.RAILWAY_ENGINE_PHONE_IDS || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
@@ -30,8 +31,11 @@ function parseMessage(body) {
   const value = JSON.parse(body).entry?.[0]?.changes?.[0]?.value || {};
   const msg = value.messages?.[0];
   if (!msg) return null; // status de entrega/leitura
-  const text = msg.text?.body || msg.button?.text || msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '';
-  return { raw: msg, from: msg.from, type: msg.type, text, name: value.contacts?.[0]?.profile?.name || '' };
+  const text = msg.text?.body || msg.button?.text || msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title
+    || (msg.interactive?.nfm_reply ? 'formulário respondido' : '');
+  // Resposta de formulário em etapas (WhatsApp Flows)
+  const nfm = msg.interactive?.type === 'nfm_reply' ? msg.interactive.nfm_reply : null;
+  return { raw: msg, from: msg.from, type: msg.type, text, nfm, name: value.contacts?.[0]?.profile?.name || '' };
 }
 
 function cooldownSeconds(cfg = {}) {
@@ -230,6 +234,13 @@ async function processEvent(ev, pool) {
   if (contact.subscriber_active === false || (contact.automation_paused_until && new Date(contact.automation_paused_until) > new Date())) {
     console.log(`[ENGINE] id=${ev.id} contato inativo ou automação pausada — sem disparo`);
     return false;
+  }
+
+  // WhatsApp Flows: resposta do "Formulário em etapas" → grava a resposta e retoma pela saída "Respondeu"
+  if (msg.type === 'interactive' && msg.nfm) {
+    const handled = await handleFlowReply(ev, pool, contact, msg, { tryFast, claim })
+      .catch((e) => { console.error(`[ENGINE] id=${ev.id} formulário falhou (Base44 assume):`, e.message); return false; });
+    if (handled) return false;
   }
 
   if (msg.type === 'button' || msg.type === 'interactive') {

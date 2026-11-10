@@ -15,6 +15,7 @@ const { generateVoice } = require('./voiceAudio');
 const { runSheetsBlock } = require('./googleSheets');
 const { fieldValue, delayResumeAt } = require('./flowDates');
 const { normText } = require('./textNorm');
+const { sendFlowMessage, flowToken } = require('./whatsappFlows');
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const CREDS_TTL_MS = 10 * 60 * 1000;
@@ -147,6 +148,7 @@ function isSupported(node, vars, waitLeft = MAX_WAIT_MS) {
     (s.type === 'file' && s.url && canRender(s.url, vars) && canRender(s.filename || s.display_name, vars)) ||
     (s.type === 'list' && listSections({ id: node.id }, s).length) ||
     (s.type === 'question' && String(s.question_text ?? s.question ?? '').trim() && canRender(s.question_text ?? s.question, vars)) ||
+    (s.type === 'flow_form' && s.meta_flow_id && canRender(s.body, vars)) ||
     (s.type === 'audio' && s.url && canRender(s.url, vars)) || (s.type === 'text' && canRender(s.content, vars) &&
     (s.buttons || []).every((b) => canRender(b.url, vars) && canRender(b.text, vars))));
 }
@@ -804,7 +806,7 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
     ? withMeta({ _executed_nodes: executed, _railway_messages: [], _railway_stop_node: null, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.aiNodes.length ? { _railway_ai_nodes: opts.aiNodes } : {}), ...voiceVars() }, { ended: false, stopSub: null }) : null;
   // Resultado completo (fim do fluxo, parada num botão/lista/pergunta ou atraso longo)
   const finish = (stop) => withMeta({ _executed_nodes: executed, _railway_messages: messages, _railway_stop_node: stop, _railway_delays: delays, _railway_random: opts.random, _railway_api: opts.api, _railway_sheets: opts.sheets, _railway_action_at: opts.actionAt, _railway_started_at: startedAt, ...(opts.question ? { _railway_question_node: opts.question } : {}), ...(opts.aiNodes.length ? { _railway_ai_nodes: opts.aiNodes } : {}), ...voiceVars() },
-    { ended: !stop && !node && !longDelay && !opts.aiWait, stopSub: stop ? opts.stopSub || null : null });
+    { ended: !stop && !node && !longDelay && !opts.aiWait, stopSub: stop ? opts.stopSub || null : null, ...(opts.flowForm ? { flowForm: opts.flowForm } : {}) });
   if (!(await skipConditions())) return partial();
   await prefetchTemplates(node, opts);
   // Salto logo no início: segue direto para o fluxo destino
@@ -846,6 +848,12 @@ async function runFast(flow, startNodeId, opts, depth = 0) {
         const data = await metaPost(creds, 'messages', payloadFor(phone, text, []));
         await push({ body: text, buttons: [], wa_id: data.messages?.[0]?.id || null, at: new Date().toISOString() });
         stop = node.id; opts.question = node.id; opts.stopSub = raw; break;
+      }
+      if (raw.type === 'flow_form') {
+        // Formulário em etapas: envia o Flow e para; a resposta (nfm_reply) retoma pela saída "Respondeu"
+        const sub = { ...raw, body: render(raw.body, vars), header: render(raw.header, vars), footer: render(raw.footer, vars), cta: render(raw.cta, vars) };
+        await push(await sendFlowMessage(creds, phone, sub, flowToken(connectionId, phone)));
+        stop = node.id; opts.flowForm = node.id; opts.stopSub = raw; break;
       }
       if (['image', 'audio', 'video', 'file'].includes(raw.type)) { await push(await sendMedia(creds, phone, raw, vars)); continue; }
       const sub = { ...raw, content: render(raw.content, vars), buttons: (raw.buttons || []).map((b) => ({ ...b, text: render(b.text, vars), url: b.url && render(b.url, vars) })) };

@@ -30,6 +30,21 @@ const supportsVision = (m) => /4o|4-turbo|vision|gpt-5|o1|o3|o4/.test((m || '').
 const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 const textOf = (c) => Array.isArray(c) ? c.filter((p) => p.type === 'text').map((p) => p.text).join(' ') : String(c);
 
+// Variáveis na resposta da IA: {{variavel}} vira o valor real.
+// Sem valor, o trecho sai como espaço — o texto digitado da variável nunca aparece na conversa.
+function renderVars(text, vars) {
+  if (!text) return '';
+  return String(text)
+    .replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
+      const key = String(k).replace(/^(custom_fields|collected|variables|campos)\./, '');
+      const v = vars[k] ?? vars[key];
+      return v === null || v === undefined || v === '' || typeof v === 'object' ? ' ' : String(v);
+    })
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
 async function downloadMedia(creds, mediaId) {
   const meta = await (await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, { headers: { Authorization: `Bearer ${creds.access_token}` } })).json();
   if (!meta.url) throw new Error('Meta não retornou URL da mídia');
@@ -221,6 +236,10 @@ async function processAi(pool, p) {
     }
   } else send = raw;
 
+  // Variáveis disponíveis para substituir na mensagem (contato + campos + variáveis salvas pela IA)
+  const vars = { contact_id: contact.id, nome: contact.nome, contact_name: contact.nome, telefone: contact.telefone, phone: contact.telefone, bsuid: contact.bsuid, email: contact.email, empresa: contact.empresa, ...(contact.custom_fields || {}), ...mapped };
+  send = renderVars(send, vars);
+
   let asAudio = false;
   const audioMark = p.voice_response_enabled && send && send.match(/^\[AUDIO\]\s*/i);
   if (audioMark) {
@@ -240,7 +259,6 @@ async function processAi(pool, p) {
   const btn = send && send.match(/\[BOTAO:\s*([^\]|]+)\s*\|\s*(https?:\/\/[^\]]+)\s*\]/i);
   if (btn) {
     const label = btn[1].trim();
-    const vars = { contact_id: contact.id, nome: contact.nome, telefone: contact.telefone, phone: contact.telefone, bsuid: contact.bsuid, email: contact.email, empresa: contact.empresa, ...(contact.custom_fields || {}), ...mapped };
     const url = btn[2].trim().replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => String(vars[k] ?? vars[k.replace(/^(custom_fields|collected|variables)\./, '')] ?? ''));
     send = send.replace(btn[0], '').trim();
     if (label && url) {

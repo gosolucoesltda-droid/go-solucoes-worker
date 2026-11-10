@@ -89,6 +89,24 @@ function finalState(fast, flow, ctx) {
     };
     return { status: 'waiting', current: stopId, ctx: c, steps: executed.length };
   }
+  // Formulário em etapas (WhatsApp Flows): espera a resposta, igual ao bloco de pergunta
+  if (fast._meta.flowForm && sub) {
+    const node = (flow.nodes || []).find((n) => n.id === stopId);
+    const d = node?.data || node?.config || {};
+    const nodeNext = nextOf(node);
+    const timeoutNext = node?.next_node_timeout_id ?? d.next_node_timeout_id ?? null;
+    const ms = Number(sub.timeout_value ?? 30) * (UNIT_MS[sub.timeout_unit ?? 'minutes'] ?? UNIT_MS.minutes);
+    c._wait_type = 'flow_reply';
+    c._wait_node_id = stopId;
+    c._wait_timeout_at = ms > 0 ? new Date(Date.now() + ms).toISOString() : null;
+    c._wait_config = {
+      type: 'flow_form', form_id: sub.form_id || null, form_name: sub.form_name || '',
+      meta_flow_id: sub.meta_flow_id || null, screen: sub.screen || null, fields: sub.fields || [],
+      next_node_id: sub.on_success_next ?? sub.next_node_id ?? nodeNext ?? null,
+      next_node_timeout_id: sub.on_timeout_next ?? timeoutNext ?? null,
+    };
+    return { status: 'waiting', current: stopId, ctx: c, steps: executed.length };
+  }
   // Botões e listas enviados: o clique segue pelo botão (mesmo resultado do Base44 com o Railway)
   return { status: 'completed', current: stopId || executed[executed.length - 1] || null, ctx: c, steps: executed.length };
 }
