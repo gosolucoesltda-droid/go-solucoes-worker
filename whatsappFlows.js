@@ -48,7 +48,16 @@ async function graph(creds, path, { method = 'GET', body, form } = {}) {
     ...(form ? { body: form } : {}),
   });
   const data = await res.json().catch(() => ({}));
-  if (data.error) throw new Error(`Meta: ${data.error.error_user_msg || data.error.message}`);
+  if (data.error) {
+    const e = data.error;
+    console.error(`[FLOW API] Meta recusou ${path}: code=${e.code} subcode=${e.error_subcode || '-'} type=${e.type} fbtrace_id=${e.fbtrace_id || '-'} msg=${e.error_user_msg || e.message}`);
+    const err = new Error(`Meta: ${e.error_user_msg || e.message}`);
+    err.meta = {
+      code: e.code ?? null, subcode: e.error_subcode ?? null, type: e.type ?? null,
+      message: e.error_user_msg || e.message, fbtrace_id: e.fbtrace_id ?? null,
+    };
+    throw err;
+  }
   return data;
 }
 
@@ -354,7 +363,7 @@ async function handleFlowApi(req, res, pool, { setBotSettingsPool }) {
     return send(400, { ok: false, error: `Ação desconhecida: ${action}` });
   } catch (e) {
     console.error('[FLOW API] erro:', e.message);
-    return send(200, { ok: false, error: e.message });
+    return send(200, { ok: false, error: e.message, meta_error: e.meta || null });
   }
 }
 
