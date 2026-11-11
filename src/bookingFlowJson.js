@@ -38,11 +38,11 @@ function dataScreen(logoUrl) {
     { type: 'TextHeading', text: 'Escolha uma data' },
     { type: 'TextBody', text: '${data.error}', visible: '${data.has_error}' },
     {
-      type: 'CalendarPicker', name: 'date_cal', visible: '${data.mode_calendar}',
+      type: 'CalendarPicker', name: 'date_cal', label: 'Escolha o dia', visible: '${data.mode_calendar}',
       'min-date': '${data.min_date}', 'max-date': '${data.max_date}',
       'unavailable-dates': '${data.unavailable}',
     },
-    { type: 'RadioButtonsGroup', name: 'date_list', 'data-source': '${data.days}', visible: '${data.mode_list}' },
+    { type: 'RadioButtonsGroup', name: 'date_list', label: 'Próximos dias', 'data-source': '${data.days}', visible: '${data.mode_list}' },
     {
       type: 'Footer', label: 'Continuar',
       'on-click-action': { name: 'data_exchange', payload: { date_cal: '${form.date_cal}', date_list: '${form.date_list}' } },
@@ -81,7 +81,7 @@ const horarioScreen = {
     children: [
       { type: 'TextHeading', text: '${data.date_label}' },
       { type: 'TextBody', text: '${data.error}', visible: '${data.has_error}' },
-      { type: 'RadioButtonsGroup', name: 'time', 'data-source': '${data.times}' },
+      { type: 'RadioButtonsGroup', name: 'time', label: 'Horários', 'data-source': '${data.times}' },
       {
         type: 'Footer', label: 'Continuar',
         'on-click-action': {
@@ -112,7 +112,7 @@ const dadosScreen = {
       { type: 'TextSubheading', text: '${data.summary}' },
       { type: 'TextCaption', text: '${data.who}' },
       { type: 'TextBody', text: '${data.error}', visible: '${data.has_error}' },
-      { type: 'TextEntry', name: 'nome', label: 'Seu nome', 'init-value': '${data.nome}', required: true },
+      { type: 'TextInput', name: 'nome', label: 'Seu nome', 'input-type': 'text', 'init-value': '${data.nome}', required: true },
       { type: 'TextArea', name: 'note', label: '${data.note_label}', visible: '${data.note_enabled}' },
       {
         type: 'Footer', label: 'Confirmar agendamento',
