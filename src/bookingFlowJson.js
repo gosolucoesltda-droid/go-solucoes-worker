@@ -63,7 +63,7 @@ function dataScreen(logoUrl) {
         __example__: [{ id: '2026-11-13', title: 'Qui, 13/11', description: '6 horários livres' }],
       },
     },
-    layout: { type: 'Screen', children },
+    layout: { type: 'SingleColumnLayout', children },
   };
 }
 
@@ -77,7 +77,7 @@ const horarioScreen = {
     times: { type: 'array', items: timeItem, __example__: [{ id: '09:00', title: '09:00' }] },
   },
   layout: {
-    type: 'Screen',
+    type: 'SingleColumnLayout',
     children: [
       { type: 'TextHeading', text: '${data.date_label}' },
       { type: 'TextBody', text: '${data.error}', visible: '${data.has_error}' },
@@ -107,7 +107,7 @@ const dadosScreen = {
     note_label: { type: 'string', __example__: 'Observação (opcional)' },
   },
   layout: {
-    type: 'Screen',
+    type: 'SingleColumnLayout',
     children: [
       { type: 'TextSubheading', text: '${data.summary}' },
       { type: 'TextCaption', text: '${data.who}' },
@@ -135,7 +135,7 @@ const successScreen = {
   success: true,
   data: { confirmacao: { type: 'string', __example__: 'Tudo certo! Seu horário está reservado.' } },
   layout: {
-    type: 'Screen',
+    type: 'SingleColumnLayout',
     children: [
       { type: 'TextHeading', text: 'Agendamento confirmado' },
       { type: 'TextBody', text: '${data.confirmacao}' },
