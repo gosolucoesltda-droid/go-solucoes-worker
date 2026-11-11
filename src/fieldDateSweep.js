@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════
 /* global module */
 const { startDaily } = require('./dailyClaim');
+const { fieldDateRef } = require('./fieldDateRef');
 const SWEEP_ID = 'sweep_field_dates';
 const LOOK_AHEAD_MS = 26 * 3600000;
 const FALLBACK_MS = 2 * 60000;
@@ -57,7 +58,8 @@ function fieldValue(contact, key) {
 async function insertJob(pool, flow, phone, contact, cfg, rawVal, when, referenceId) {
   await pool.query(
     `insert into scheduled_jobs (company_id, job_type, flow_base44_id, contact_phone, scheduled_for, status, attempts, max_attempts, reference_id, reference_type, context)
-     values ($1, 'flow_trigger', $2, $3, $4, 'pending', 0, 3, $5, 'contact_field', $6)`,
+     values ($1, 'flow_trigger', $2, $3, $4, 'pending', 0, 3, $5, 'contact_field', $6)
+     on conflict do nothing`,
     [flow.company_id, flow.base44_id, phone, when.toISOString(), referenceId, JSON.stringify({
       field_key: cfg.field_key, field_value: rawVal, offset_value: Number(cfg.offset_value ?? 0), offset_unit: cfg.offset_unit || 'days',
       offset_direction: cfg.offset_direction || 'same_day', trigger_type: 'contact_field_date',
@@ -96,7 +98,12 @@ async function sweepFlow(pool, flow, res) {
       const t = target.getTime();
       const phone = String(contact.telefone || '').replace(/\D/g, '');
       if (!phone) continue;
-      const referenceId = `${flow.base44_id}_${contact.id}_${fieldKey}_${target.toISOString().slice(0, 10)}`;
+      // Chave única: valor do campo em AAAA-MM-DD (regra em fieldDateRef.js)
+      const referenceId = fieldDateRef({
+        flowId: flow.base44_id, contactId: contact.id, fieldKey,
+        fieldValue: rawVal, repeat: !!cfg.repeat_yearly, occurrenceAt: target,
+      });
+      if (!referenceId) continue;
 
       // Alvo passou há menos de 2 min: dispara agora (se o fluxo não estiver rodando para o contato)
       if (t <= nowMs && nowMs - t < FALLBACK_MS) {

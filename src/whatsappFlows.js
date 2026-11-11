@@ -3,11 +3,15 @@
 // - Cria/atualiza/publica formulários na Meta (Graph API v22.0) com o token e o WABA da conexão
 // - Envia o formulário dentro do fluxo (mensagem interativa type=flow)
 // - Recebe a resposta (webhook nfm_reply), grava em whatsapp_flow_responses e retoma a espera
+// - Prepara o Flow de agendamento (endpoint) e a chave de criptografia por número
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
 const { loadCreds } = require('./botSettings');
+const { ensureBookingFlow, bookingStatus, rotateAll, publicKeyPem, keyFingerprint, isEphemeral, hasKey, NO_KEY_MESSAGE } = require('./bookingFlowSetup');
+const {
+  graph, createFlow, uploadFlowJson, getFlow, publishFlow, deprecateFlow, deleteFlow, listMetaFlows,
+} = require('./flowGraph');
 
-const GRAPH = 'https://graph.facebook.com/v22.0';
 const APP_URL = process.env.APP_URL || 'https://gocrm.base44.app';
 const WORKER_SECRET = process.env.WORKER_SECRET;
 const PILOT_IDS = (process.env.RAILWAY_ENGINE_PHONE_IDS || '')
@@ -26,6 +30,14 @@ function isPilot(phoneNumberId) {
   return !!phoneNumberId && (PILOT_IDS.includes('*') || PILOT_IDS.includes(phoneNumberId));
 }
 
+// Endereço público do próprio worker (para o endpoint do Flow de agendamento).
+function endpointBase() {
+  const explicit = (process.env.FLOW_BOOKING_ENDPOINT_BASE || '').replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const domain = (process.env.RAILWAY_PUBLIC_DOMAIN || '').replace(/\/+$/, '');
+  return domain ? `https://${domain}` : '';
+}
+
 // ── Token do formulário: identifica conexão e contato na volta do webhook ──
 function flowToken(connectionId, phone) {
   return `v1_${connectionId}_${String(phone).replace(/\D/g, '')}_${crypto.randomBytes(4).toString('hex')}`;
@@ -36,50 +48,8 @@ function parseFlowToken(token) {
   return m ? { connectionId: m[1], phone: m[2] } : null;
 }
 
-// ── Chamadas à Graph API ──
-async function graph(creds, path, { method = 'GET', body, form } = {}) {
-  const res = await fetch(`${GRAPH}/${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${creds.access_token}`,
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    ...(form ? { body: form } : {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (data.error) throw new Error(`Meta: ${data.error.error_user_msg || data.error.message}`);
-  return data;
-}
-
-async function createFlow(creds, { name, categories = ['OTHER'], flow_json }) {
-  if (!creds.waba_id) throw new Error('Conexão sem WABA ID');
-  return graph(creds, `${creds.waba_id}/flows`, {
-    method: 'POST',
-    body: {
-      name,
-      categories,
-      ...(flow_json ? { flow_json: typeof flow_json === 'string' ? flow_json : JSON.stringify(flow_json) } : {}),
-    },
-  });
-}
-
-async function uploadFlowJson(creds, metaFlowId, flowJson) {
-  const json = typeof flowJson === 'string' ? flowJson : JSON.stringify(flowJson);
-  const form = new FormData();
-  form.append('name', 'flow.json');
-  form.append('asset_type', 'FLOW_JSON');
-  form.append('file', new Blob([json], { type: 'application/json' }), 'flow.json');
-  return graph(creds, `${metaFlowId}/assets`, { method: 'POST', form });
-}
-
-const getFlow = (creds, metaFlowId) => graph(creds,
-  `${metaFlowId}?fields=id,name,status,categories,validation_errors,preview,json_version,health_status`);
-const publishFlow = (creds, metaFlowId) => graph(creds, `${metaFlowId}/publish`, { method: 'POST' });
-const deprecateFlow = (creds, metaFlowId) => graph(creds, `${metaFlowId}/deprecate`, { method: 'POST' });
-const deleteFlow = (creds, metaFlowId) => graph(creds, metaFlowId, { method: 'DELETE' });
-const listMetaFlows = (creds) => graph(creds,
-  `${creds.waba_id}/flows?fields=id,name,status,categories,validation_errors,json_version&limit=100`);
+// Flow de agendamento (endpoint): o flow_token é o mesmo token do form_links.
+const isFormLinkToken = (token) => /^[0-9a-f]{48}$/.test(String(token || ''));
 
 // ── Credenciais da conexão (Supabase; Base44 como reserva) ──
 async function credsFor(pool, companyId, connectionId, poolSetter) {
@@ -137,8 +107,8 @@ async function saveForm(pool, f) {
   const id = f.id || newId();
   await pool.query(
     `insert into whatsapp_flow_forms (id, company_id, connection_id, phone_number_id, waba_id, base44_flow_id, meta_flow_id, name,
-       categories, status, screens, flow_json, json_version, preview_url, validation_errors, last_error, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13,$14,$15::jsonb,$16,now())
+       categories, status, screens, flow_json, json_version, preview_url, validation_errors, last_error, kind, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13,$14,$15::jsonb,$16,'form',now())
      on conflict (id) do update set meta_flow_id = excluded.meta_flow_id, name = excluded.name, categories = excluded.categories,
        status = excluded.status, screens = coalesce(excluded.screens, whatsapp_flow_forms.screens),
        flow_json = coalesce(excluded.flow_json, whatsapp_flow_forms.flow_json), json_version = excluded.json_version,
@@ -161,7 +131,6 @@ async function findForm(pool, companyId, connectionId, { formId, metaFlowId }) {
   return rows[0] || null;
 }
 
-// ── Resposta do formulário (webhook nfm_reply) ──
 async function saveContactFields(pool, contact, response, mapping) {
   const rows = (mapping || []).filter((m) => m?.from && response[m.from] !== undefined && response[m.from] !== '');
   const entries = rows.length
@@ -185,13 +154,73 @@ async function saveContactFields(pool, contact, response, mapping) {
   return entries;
 }
 
+/**
+ * Resposta do Flow de agendamento (endpoint). A criação do agendamento já aconteceu
+ * no endpoint, na confirmação; aqui a mesma formSubmitted é chamada de novo —
+ * idempotente pelo token do link e pelo wamid.
+ */
+async function handleBookingFlowReply(ev, pool, contact, msg) {
+  const nfm = msg.nfm || {};
+  const token = String(nfm.flow_token || '');
+  const { rows } = await pool.query(`select * from form_links where token = $1 limit 1`, [token]);
+  const link = rows[0];
+  if (!link) {
+    console.warn(`[FLOW] id=${ev.id} token de agendamento desconhecido: ${token.slice(0, 6)}…`);
+    return true;
+  }
+
+  const { rows: ins } = await pool.query(
+    `insert into whatsapp_flow_responses (id, company_id, connection_id, form_id, meta_flow_id, flow_token, contact_id, contact_phone,
+       execution_id, wamid, screen, response_json, status)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,'received')
+     on conflict (wamid) do nothing returning id`,
+    [newId(), contact.company_id, contact.connection_id, link.form_id || null, null, token, contact.id, msg.from,
+      link.execution_id || null, msg.raw.id, 'DADOS', JSON.stringify(nfm.response_json || '')],
+  );
+  if (!ins[0]) { console.log(`[FLOW] id=${ev.id} resposta repetida (wamid ${msg.raw.id}) — ignorada`); return true; }
+
+  let response = {};
+  try { response = JSON.parse(nfm.response_json || '{}') || {}; } catch { response = {}; }
+  const block = (link.form_snapshot?.screens || [])
+    .flatMap((s) => s.blocks || [])
+    .find((b) => b.kind === 'agendamento');
+  const date = String(response.date || '');
+  const time = String(response.time || '');
+  if (!block?.id || !date || !time) {
+    console.log(`[FLOW] id=${ev.id} resposta sem data/hora — ignorada`);
+    return true;
+  }
+
+  const res = await fetch(`${APP_URL}/functions/formPageApi`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'submit', token,
+      answers: { [block.id]: { date, time, note: String(response.note || ''), confirmed: true } },
+    }),
+    signal: AbortSignal.timeout(9000),
+  }).catch(() => null);
+  const out = await res?.json().catch(() => null);
+  const state = out?.ok ? (out.duplicate ? 'já registrado' : 'registrado')
+    : out?.error === 'used' ? 'já registrado'
+    : out?.error === 'no_slot' ? 'horário ocupado'
+    : (out?.error || 'falhou');
+  console.log(`[FLOW] id=${ev.id} agendamento ${date} ${time} → ${state}`);
+  return true;
+}
+
 // true = resposta tratada (o Base44 não dispara gatilhos com ela)
 async function handleFlowReply(ev, pool, contact, msg, { tryFast, claim }) {
   const nfm = msg.nfm;
   if (!nfm) return false;
   const phone = msg.from;
   const parsed = parseFlowToken(nfm.flow_token);
-  if (!parsed) { console.warn(`[FLOW] id=${ev.id} flow_token desconhecido: ${nfm.flow_token}`); return true; }
+  if (!parsed) {
+    // Formato novo (Flow de agendamento): token do form_links.
+    if (isFormLinkToken(nfm.flow_token)) return await handleBookingFlowReply(ev, pool, contact, msg);
+    console.warn(`[FLOW] id=${ev.id} flow_token desconhecido: ${nfm.flow_token}`);
+    return true;
+  }
   if (parsed.connectionId !== contact.connection_id || parsed.phone !== String(contact.telefone)) {
     console.warn(`[FLOW] id=${ev.id} token não confere com contato/conexão (${parsed.connectionId}/${parsed.phone})`);
     return true;
@@ -284,15 +313,44 @@ async function handleFlowApi(req, res, pool, { setBotSettingsPool }) {
   try {
     if (action === 'pilotIds') return send(200, { ok: true, ...pilotIds() });
 
+    // Chave pública do endpoint (nunca a privada).
+    if (action === 'bookingKey') {
+      if (!hasKey()) return send(200, { ok: false, code: 'no_key', error: NO_KEY_MESSAGE });
+      return send(200, { ok: true, public_key: publicKeyPem(), fingerprint: keyFingerprint(), ephemeral: isEphemeral() });
+    }
+
+    // Rotação / vazamento: recadastra a chave em todas as conexões.
+    if (action === 'encryptionRotateAll') {
+      const result = await rotateAll(pool, { companyId: body.company_id || null });
+      return send(200, result);
+    }
+
     if (!companyId || !connectionId) return send(400, { ok: false, error: 'company_id e connection_id obrigatórios' });
     const creds = await credsFor(pool, companyId, connectionId, setBotSettingsPool);
     const base = { company_id: companyId, connection_id: connectionId, phone_number_id: creds.phone_number_id, waba_id: creds.waba_id };
 
+    // Status do agendamento no WhatsApp (painel do nó) — não publica nada.
+    if (action === 'bookingStatus') {
+      const status = await bookingStatus(pool, { companyId, connectionId, creds });
+      return send(200, { ...status, ...base });
+    }
+
+    // Cria/publica o Flow de agendamento da conexão + cadastra a chave no número.
+    if (action === 'bookingEnsure') {
+      const endpoint = endpointBase();
+      if (!endpoint) return send(200, { ok: false, error: 'Servidor de agendamento sem endereço público (defina FLOW_BOOKING_ENDPOINT_BASE no Railway)' });
+      const result = await ensureBookingFlow(pool, {
+        companyId, connectionId, creds, endpointBase: endpoint, logoUrl: body.logo_url || '',
+      });
+      return send(200, { ...result, ...base });
+    }
+
     if (action === 'list') {
       const meta = await listMetaFlows(creds).catch((e) => ({ data: [], error: e.message }));
       const { rows } = await pool.query(
-        `select id, meta_flow_id, name, status, screens, preview_url, validation_errors, json_version, updated_at
-         from whatsapp_flow_forms where company_id = $1 and connection_id = $2 order by updated_at desc limit 100`,
+        `select id, meta_flow_id, name, status, screens, flow_json, preview_url, validation_errors, json_version, updated_at
+         from whatsapp_flow_forms where company_id = $1 and connection_id = $2 and coalesce(kind,'form') = 'form'
+         order by updated_at desc limit 100`,
         [companyId, connectionId]
       );
       return send(200, { ok: true, forms: rows, meta_flows: meta.data || [], meta_error: meta.error || null });
@@ -354,10 +412,11 @@ async function handleFlowApi(req, res, pool, { setBotSettingsPool }) {
     return send(400, { ok: false, error: `Ação desconhecida: ${action}` });
   } catch (e) {
     console.error('[FLOW API] erro:', e.message);
-    return send(200, { ok: false, error: e.message });
+    return send(200, { ok: false, error: e.message, meta_error: e.meta || null });
   }
 }
 
 module.exports = {
-  pilotIds, isPilot, flowToken, parseFlowToken, sendFlowMessage, handleFlowReply, handleFlowApi,
+  pilotIds, isPilot, flowToken, parseFlowToken, isFormLinkToken, sendFlowMessage, handleFlowReply,
+  handleBookingFlowReply, handleFlowApi,
 };

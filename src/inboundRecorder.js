@@ -8,6 +8,24 @@
 const crypto = require('crypto');
 const { transcribeAudio } = require('./audioTranscribe');
 
+// Resposta de "Formulário em etapas" → texto legível (mesmo formato do Base44)
+function formReplyBody(responseJson) {
+  let data = {};
+  try { data = typeof responseJson === 'string' ? JSON.parse(responseJson || '{}') : (responseJson || {}); } catch { data = {}; }
+  const lines = Object.entries(data || {})
+    .filter(([k]) => !['flow_token', 'flow_id', 'screen', 'screen_id'].includes(k))
+    .map(([k, v]) => {
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'object') return null;
+      const value = typeof v === 'boolean' ? (v ? 'Sim' : 'Não') : String(v).trim();
+      if (!value) return null;
+      const words = String(k).replace(/_/g, ' ').trim();
+      return `${words.charAt(0).toUpperCase()}${words.slice(1)}: ${value}`;
+    })
+    .filter(Boolean);
+  return lines.length ? lines.join('\n') : 'Formulário respondido';
+}
+
 // Mesmo formato que o Base44 grava (corpo + campos de mídia)
 function inboundFields(msg) {
   const t = msg.type || 'text';
@@ -21,7 +39,9 @@ function inboundFields(msg) {
     case 'document': return { tipo: t, body: m.filename || '[Documento]', file_name: m.filename || '', ...media('document_media_id') };
     case 'sticker': return { tipo: t, body: '[Sticker]', ...media('image_media_id') };
     case 'button': return { tipo: t, body: msg.button?.text || '[Botão]' };
-    case 'interactive': return { tipo: t, body: msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '[Interação]' };
+    case 'interactive':
+      if (msg.interactive?.nfm_reply) return { tipo: 'flow_reply', body: formReplyBody(msg.interactive.nfm_reply.response_json) };
+      return { tipo: t, body: msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '[Interação]' };
     case 'reaction': case 'contacts': return null;
     default: return { tipo: t, body: `[${t}]` };
   }

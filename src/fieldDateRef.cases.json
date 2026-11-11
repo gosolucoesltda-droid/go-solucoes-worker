@@ -1,0 +1,136 @@
+{
+  "descricao": "Casos únicos da chave dos jobs contact_field_date. Rodados por fieldDateRef.js (worker) e por base44/shared/fieldDateRef.ts, com a mesma expectativa.",
+  "formato": "{flowId}_{contactId}_{fieldKey}_{AAAA-MM-DD}",
+  "casos": [
+    {
+      "nome": "AAAA-MM-DD simples",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-11-30", "repeat": "none", "occurrenceAt": "2026-10-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-11-30"
+    },
+    {
+      "nome": "data do disparo é ignorada (só o valor do campo entra na chave)",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-11-30", "repeat": "none", "occurrenceAt": "2027-03-15T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-11-30"
+    },
+    {
+      "nome": "DD/MM/AAAA",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "03/09/2026", "repeat": "none", "occurrenceAt": "2026-08-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-09-03"
+    },
+    {
+      "nome": "DD/MM/AAAA com hora",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "18/12/2025 14:30", "repeat": "none", "occurrenceAt": "2025-11-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2025-12-18"
+    },
+    {
+      "nome": "ISO com fuso Z mantém o dia escrito",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-07-16T20:25:00.000Z", "repeat": "none", "occurrenceAt": "2026-06-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-07-16"
+    },
+    {
+      "nome": "ISO que cairia no dia anterior em Brasília continua no dia escrito",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-07-16T02:00:00.000Z", "repeat": "none", "occurrenceAt": "2026-06-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-07-16"
+    },
+    {
+      "nome": "epoch em segundos (texto)",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "1790109919", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-09-22"
+    },
+    {
+      "nome": "epoch em milissegundos (texto)",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "1790110342000", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-09-22"
+    },
+    {
+      "nome": "epoch enviado como número",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": 1790109919, "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-09-22"
+    },
+    {
+      "nome": "valor vazio não gera chave",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": null
+    },
+    {
+      "nome": "valor só com espaços não gera chave",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "   ", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": null
+    },
+    {
+      "nome": "valor nulo não gera chave",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": null, "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": null
+    },
+    {
+      "nome": "texto inválido não gera chave",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "sem data", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": null
+    },
+    {
+      "nome": "mês inválido não gera chave",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-13-05", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": null
+    },
+    {
+      "nome": "31/02 não gera chave",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "31/02/2026", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": null
+    },
+    {
+      "nome": "sem flowId não gera chave",
+      "entrada": { "flowId": "", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-11-30", "repeat": "none", "occurrenceAt": "2026-09-01T12:00:00Z" },
+      "esperado": null
+    },
+    {
+      "nome": "repeat_yearly usa o ano da ocorrência",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "1990-05-12", "repeat": "yearly", "occurrenceAt": "2026-11-11T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-05-12"
+    },
+    {
+      "nome": "repeat_yearly com occorrência na virada do ano",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "1990-12-25", "repeat": "yearly", "occurrenceAt": "2027-01-02T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2027-12-25"
+    },
+    {
+      "nome": "repeat_yearly com valor em DD/MM/AAAA",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "12/05/1990", "repeat": "yearly", "occurrenceAt": "2026-11-11T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-05-12"
+    },
+    {
+      "nome": "repeat_yearly chega como booleano true (formato do gatilho)",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "1990-05-12", "repeat": true, "occurrenceAt": "2026-11-11T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-05-12"
+    },
+    {
+      "nome": "repeat_yearly sem data de ocorrência cai na data do campo",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "1990-05-12", "repeat": "yearly", "occurrenceAt": null },
+      "esperado": "F1_C1_vencimento_1990-05-12"
+    },
+    {
+      "nome": "mensal com 31/01 cai no fim de fevereiro",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "31/01/2026", "repeat": "monthly", "occurrenceAt": "2026-02-10T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-02-28"
+    },
+    {
+      "nome": "mensal com 31 cai no fim de abril",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-01-31", "repeat": "monthly", "occurrenceAt": "2026-04-05T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-04-30"
+    },
+    {
+      "nome": "mensal em fevereiro bissexto",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "31/01/2024", "repeat": "monthly", "occurrenceAt": "2024-02-01T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2024-02-29"
+    },
+    {
+      "nome": "mensal com dia normal mantém o dia do campo",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2026-01-15", "repeat": "monthly", "occurrenceAt": "2026-06-20T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2026-06-15"
+    },
+    {
+      "nome": "mensal com valor em ISO completo",
+      "entrada": { "flowId": "F1", "contactId": "C1", "fieldKey": "vencimento", "fieldValue": "2024-01-31T00:00:00.000Z", "repeat": "monthly", "occurrenceAt": "2024-02-05T12:00:00Z" },
+      "esperado": "F1_C1_vencimento_2024-02-29"
+    }
+  ]
+}

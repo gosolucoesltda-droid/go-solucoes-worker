@@ -39,6 +39,8 @@ const { setBotSettingsPool } = require('./botSettings');
 const { serveAudio } = require('./voiceAudio');
 const { handlePublicApi } = require('./publicApi');
 const { handleFlowApi, pilotIds } = require('./whatsappFlows');
+const { handleBookingFlow, bookingMetrics } = require('./flowBooking');
+const { versionInfo } = require('./buildInfo');
 
 // ── Config ──
 const PORT = process.env.PORT || 3000;
@@ -74,6 +76,12 @@ let stats = { processed: 0, sent: 0, failed: 0, errors: 0, startedAt: new Date()
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
+  // Identificação do build (checklist de deploy e painel do bloco).
+  if (req.method === 'GET' && url.pathname === '/version') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(versionInfo()));
+  }
+
   if (req.method === 'GET' && url.pathname === '/health') {
     return healthHandler(req, res);
   }
@@ -106,6 +114,24 @@ const server = http.createServer(async (req, res) => {
   // WhatsApp Flows — criar / validar / publicar / listar formulários (chamado pela função Base44)
   if (req.method === 'POST' && url.pathname === '/whatsapp-flow') {
     return handleFlowApi(req, res, pgPool, { setBotSettingsPool });
+  }
+
+  // Endpoint do Flow de agendamento (Meta → worker). A autenticidade vem do payload cifrado.
+  if (req.method === 'POST' && url.pathname === '/flows/booking') {
+    return handleBookingFlow(req, res, url, pgPool).catch((e) => {
+      console.error('[FLOW-BOOKING] erro não tratado:', e.message);
+      if (!res.headersSent) { res.writeHead(500); res.end('Error'); }
+    });
+  }
+
+  // Tempos por tela do endpoint (p50/p90) — protegido pelo WORKER_SECRET.
+  if (req.method === 'GET' && url.pathname === '/flows/booking/metrics') {
+    if ((req.headers.authorization || '') !== `Bearer ${WORKER_SECRET}`) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(bookingMetrics()));
   }
 
   if (req.method === 'POST' && url.pathname === '/flow/manual') {

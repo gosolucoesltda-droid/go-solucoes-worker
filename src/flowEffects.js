@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════
 const crypto = require('crypto');
 const { parseFieldDate, calcScheduledFor } = require('./fieldDateSweep');
+const { fieldDateRef } = require('./fieldDateRef');
 const { saveDealFields } = require('./dealFieldMap');
 const { logDealChanges, stageNameOf } = require('./dealNotices');
 const { claimOrInsertNotice } = require('./liveTimeline');
@@ -142,12 +143,18 @@ async function dateJobs(pool, contact, phone, key, value) {
     if (cfg.field_key !== key || (contact.connection_id && f.connection_id && f.connection_id !== contact.connection_id)) continue;
     let when = calcScheduledFor(fieldDate, cfg);
     if (when.getTime() <= now) { if (now - when.getTime() >= 5 * 60000) continue; when = new Date(now + 60000); }
-    const ref = `${f.base44_id}_${contact.id}_${key}_${value}`;
+    // Chave única: valor do campo em AAAA-MM-DD (regra em fieldDateRef.js)
+    const ref = fieldDateRef({
+      flowId: f.base44_id, contactId: contact.id, fieldKey: key,
+      fieldValue: value, repeat: !!cfg.repeat_yearly, occurrenceAt: when,
+    });
+    if (!ref) continue;
     const { rows } = await pool.query(`select 1 from scheduled_jobs where reference_id = $1 and status in ('pending','queued','running') limit 1`, [ref]);
     if (rows.length) continue;
     await pool.query(
       `insert into scheduled_jobs (company_id, job_type, flow_base44_id, contact_phone, scheduled_for, status, attempts, max_attempts, reference_id, reference_type, context)
-       values ($1,'flow_trigger',$2,$3,$4,'pending',0,3,$5,'contact_field',$6)`,
+       values ($1,'flow_trigger',$2,$3,$4,'pending',0,3,$5,'contact_field',$6)
+       on conflict do nothing`,
       [contact.company_id, f.base44_id, phone, when.toISOString(), ref, JSON.stringify({ contact_phone: phone, contact_name: contact.nome || phone, field_key: key,
         field_value: String(value), flow_name: f.name, connection_id: contact.connection_id || null, contact_id: contact.id, source: 'contact_field_update' })]);
   }
